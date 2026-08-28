@@ -4,17 +4,19 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
 
-# OpenEarthMap 9-class palette (RGB, 0-255)
+# OpenEarthMap 9-class palette (RGB, 0-255) — chính thức theo bảng màu OEM
+# (class 0 "Background"/unlabeled dùng đen 000000, không có trong bảng gốc
+# vì OEM chỉ định nghĩa màu cho 8 lớp có nhãn).
 OEM_PALETTE = np.array([
-    [0,   0,   0  ],   # 0 Background
-    [128, 0,   0  ],   # 1 Bareland
-    [0,   128, 0  ],   # 2 Rangeland
-    [128, 128, 0  ],   # 3 Developed
-    [0,   0,   128],   # 4 Road
-    [128, 0,   128],   # 5 Tree
-    [0,   128, 128],   # 6 Water
-    [128, 128, 128],   # 7 Agriculture
-    [64,  0,   0  ],   # 8 Building
+    [0,   0,   0  ],   # 0 Background      (000000)
+    [128, 0,   0  ],   # 1 Bareland        (800000)
+    [0,   255, 36 ],   # 2 Rangeland       (00FF24)
+    [148, 148, 148],   # 3 Developed space (949494)
+    [255, 255, 255],   # 4 Road            (FFFFFF)
+    [34,  97,  38 ],   # 5 Tree            (226126)
+    [0,   69,  255],   # 6 Water           (0045FF)
+    [75,  181, 73 ],   # 7 Agriculture land(4BB549)
+    [222, 31,  7  ],   # 8 Building        (DE1F07)
 ], dtype=np.uint8)
 
 CLASS_NAMES = [
