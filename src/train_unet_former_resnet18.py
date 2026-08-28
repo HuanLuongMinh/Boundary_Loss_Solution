@@ -282,7 +282,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config',  required=True, help='Path to YAML config')
     parser.add_argument('--dry-run', action='store_true',
-                        help='Quick smoke-test: 5 iters, 2 val steps, 4 samples')
+                        help='Quick smoke-test: 5 iters, 2 val steps, '
+                             '~4 samples/rank (scales with world_size)')
     parser.add_argument('--resume', default=None,
                         help='Path to latest_checkpoint.pth to resume training from')
     parser.add_argument('--data-root', default=None,
@@ -380,7 +381,12 @@ def main():
 
     if args.dry_run:
         from torch.utils.data import Subset
-        train_ds = Subset(train_ds, list(range(min(4, len(train_ds)))))
+        # train_loader dùng drop_last=True — phải để lại đủ ảnh cho MỖI rank
+        # có ít nhất 1 batch (DistributedSampler chia đều theo world_size),
+        # nếu không cycle() sẽ lặp epoch rỗng vô hạn và treo không lỗi.
+        world_size = dist.get_world_size()
+        n_train = max(4, tr['BATCH_SIZE_PER_GPU'] * world_size)
+        train_ds = Subset(train_ds, list(range(min(n_train, len(train_ds)))))
         val_ds   = Subset(val_ds,   list(range(min(4, len(val_ds)))))
 
     train_sampler = DistributedSampler(train_ds, shuffle=True, seed=seed)
