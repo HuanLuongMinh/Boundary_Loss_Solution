@@ -1,0 +1,68 @@
+DATASET:
+  # Y HỆT configs/unet_former_resnet18_combineLoss/baseline.yaml — không split/
+  # subset, dùng thẳng toàn bộ images/train + images/val có sẵn. ROOT_DIR được
+  # resolve động lúc chạy (resolve_dataset_paths() trong src/train_bce_edge.py).
+  ROOT_DIR: "/kaggle/input/datasets/aletbm/global-land-cover-mapping-openearthmap"
+  TRAIN_IMG_DIR: "images/train"
+  TRAIN_MASK_DIR: "labels/train"
+  VAL_ROOT_DIR: "/kaggle/input/datasets/aletbm/global-land-cover-mapping-openearthmap"
+  VAL_IMG_DIR: "images/val"
+  VAL_MASK_DIR: "labels/val"
+
+MODEL:
+  # Kiến trúc UNetFormer y hệt baseline — src/models/unet_former_resnet18.py
+  # KHÔNG đổi. BoundaryHead (src/losses/boundary_bce.py) là nhánh phụ MỚI,
+  # không thuộc block MODEL này, xem BOUNDARY_LOSS bên dưới.
+  ARCH: "UnetFormer"
+  ENCODER: "resnet18.fb_swsl_ig1b_ft_in1k"
+  PRETRAINED: true
+  DECODE_CHANNELS: 64
+  WINDOW_SIZE: 8
+  NUM_HEADS: 8
+  MLP_RATIO: 4.0
+  DROP_PATH_RATE: 0.1
+  DROPOUT_RATIO: 0.1
+
+LOSS:
+  # L_seg — y hệt baseline, tái sử dụng nguyên CombinedLoss (CE+Dice), KHÔNG đổi.
+  TYPE: "CombinedLoss"
+  CE_WEIGHT: 1.0
+  DICE_WEIGHT: 1.0
+
+# L_total = L_seg + LAMBDA_EDGE * L_edge  (docs/idea_research.md mục 2.1, Run 2
+# Bảng 1: "+ BCE Edge"). Spec đầy đủ: docs/workflow_2.md mục 3.1.
+BOUNDARY_LOSS:
+  LAMBDA_EDGE: 0.4          # cố định cho smoke-test Run 2 này (KHÔNG phải alpha*
+                              # từ alpha-sweep — hạ tầng đó chưa xây). Có thể ghi đè
+                              # lúc chạy qua --lambda-edge / scripts/run_bce_edge.sh <value>
+                              # để phục vụ ablation nhanh, không cần sửa file này.
+  CONNECTIVITY: 4            # 4-connected, cố định xuyên suốt nghiên cứu
+  DILATION_RADIUS: 0         # không dilate thêm — edge width = 1 pixel
+  IGNORE_INDEX: 255          # khớp CombinedLoss/SegmentationMetrics hiện có (no-op thực tế)
+  POS_WEIGHT_MAX: 20.0       # clip pos_weight balanced-BCE về [1.0, 20.0]
+  EDGE_STATS_FILE: ""        # để trống -> train_bce_edge.py tự ước lượng pos_weight lúc khởi
+                              # động (bounded, xem EDGE_STATS_NUM_BATCHES). Trỏ tới file JSON do
+                              # `python Tools/measure_edge_ratio.py --out <path>` sinh ra để dùng
+                              # con số "chính thức" (đo trên FULL epoch) thay vì ước lượng.
+  EDGE_STATS_NUM_BATCHES: 100 # chỉ dùng khi EDGE_STATS_FILE trống/không tồn tại
+
+TRAIN:
+  SEED: 19                   # Y HỆT baseline.yaml — không đổi, để model init/shuffle/augmentation
+                              # cùng seed, chỉ khác ở việc có thêm boundary loss.
+  NUM_CLASSES: 9
+  MAX_ITERS: 40000
+  VAL_INTERVAL: 4000
+  EARLY_STOPPING_PATIENCE: 4
+  BATCH_SIZE_PER_GPU: 4
+  NUM_WORKERS: 2
+  WARMUP_ITERS: 500
+
+OPTIMIZER:
+  BASE_LR: 0.0006
+  WEIGHT_DECAY: 0.01
+  GRAD_CLIP: 5.0
+
+OUTPUT:
+  # Work dir RIÊNG, không đụng work_dirs/baseline — thực nghiệm này chạy độc
+  # lập, không ghi đè/ảnh hưởng gì tới output của baseline.
+  WORK_DIR: "/kaggle/working/unetformer-resnet18-bce-edge-openearthmap/work_dirs/bce_edge"

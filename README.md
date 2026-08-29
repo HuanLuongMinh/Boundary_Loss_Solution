@@ -6,6 +6,10 @@ GLTB paper-faithful), loss `L_region` thuần (CrossEntropy + Dice) — **chưa*
 phần boundary/affinity loss nào. Đây là mốc so sánh (hàng "Baseline" trong Bảng 1 của đề cương)
 cho các biến thể boundary-loss sẽ làm sau, tách biệt hoàn toàn khỏi phần này.
 
+> **Muốn xem nhanh tất cả thí nghiệm đã triển khai (cấu hình, kết quả, trạng thái) ở 1 chỗ?**
+> Xem `docs/tong_quan_thuc_nghiem.md`. File README này chỉ mô tả chi tiết riêng thí nghiệm Baseline
+> (mục 1-7) + thí nghiệm "Baseline vs BCE Loss" (mục 8).
+
 ---
 
 ## 1. Tổng quan quá trình xử lý
@@ -246,6 +250,114 @@ trên toàn bộ quá trình train (không chỉ đoạn sau khi resume).
 
 Baseline này **chỉ** gồm `L_region` (CE + Dice) — KHÔNG có boundary loss / affinity loss / λ
 động / DAPCN. Các thành phần đó thuộc nghiên cứu "Dynamic Boundary-Aware Loss" mô tả trong
-`docs/idea_research.md` và `docs/workflow_1.md`, sẽ được xây dựng trong các file/thư mục **mới**
+`docs/idea_research.md` và `docs/workflow_2.md`, được xây dựng trong các file/thư mục **mới**
 riêng biệt (không sửa bất kỳ file nào trong `src/` liệt kê ở mục 3), để không ảnh hưởng tới kết
-quả baseline này khi so sánh.
+quả baseline này khi so sánh. Thực nghiệm đầu tiên thuộc hướng này — "Baseline vs BCE Loss"
+(Run 2 của Bảng 1) — xem mục 8 bên dưới.
+
+---
+
+## 8. Thực nghiệm 2 — "Baseline vs BCE Loss" (Run 2, Bảng 1 `docs/idea_research.md`)
+
+Thêm **duy nhất 1 thành phần** lên trên baseline (mục 1-7): boundary/edge supervision loss.
+
+$$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{seg}} + \lambda_{\text{edge}} \cdot \mathcal{L}_{\text{edge}}$$
+
+- $\mathcal{L}_{\text{seg}}$ = `CombinedLoss` (CE + Dice) — **tái sử dụng nguyên**, không sửa, không viết lại.
+- $\mathcal{L}_{\text{edge}}$ = balanced BCE trên `edge_logits` (sinh bởi 1 `BoundaryHead` phụ gắn trên
+  Fused Feature của decoder) so với `edge_gt` (trích từ ground-truth mask, 4-connected, không dilate
+  thêm) — pos_weight cân bằng lớp thiểu số "edge". Spec kỹ thuật đầy đủ: `docs/workflow_2.md` mục 3.1.
+- $\lambda_{\text{edge}}$ = **0.4 cố định** cho lần chạy đầu tiên này (chưa phải α* từ alpha-sweep —
+  hạ tầng đó thuộc Phase 1 đầy đủ, chưa xây) — có thể ghi đè khi chạy để ablation nhanh (xem bên dưới).
+
+Đây là **thực nghiệm hoàn toàn độc lập** với baseline: file mới 100%, không sửa bất kỳ file nào liệt
+kê ở mục 3 (baseline vẫn `bash scripts/run_baseline.sh` chạy lại y hệt bất kỳ lúc nào), work dir
+riêng, script chạy riêng.
+
+### 8.1. File mới
+
+```
+BoundaryLossSolution/
+├── src/
+│   ├── losses/                              # 🆕 package mới — KHÔNG sửa src/utils/losses.py cũ
+│   │   ├── __init__.py
+│   │   └── boundary_bce.py                  # extract_edge_gt, BoundaryHead, BalancedBCEEdgeLoss,
+│   │                                          # EdgeStatsAccumulator, compute_pos_weight
+│   └── train_bce_edge.py                    # script train — ĐỘC LẬP với train_unet_former_resnet18.py,
+│                                              # chỉ dùng chung src/data, src/utils, model UNetFormer
+├── configs/
+│   └── unet_former_resnet18_bce_edge/
+│       └── bce_edge.yaml                    # kế thừa mọi hyperparam từ baseline.yaml (seed=19, 40k
+│                                              # iter...), thêm block BOUNDARY_LOSS
+├── Tools/
+│   └── measure_edge_ratio.py                # tool ĐỘC LẬP, tuỳ chọn: đo r_edge/pos_weight "chính
+│                                              # thức" trên full epoch, KHÔNG bắt buộc chạy trước train
+└── scripts/
+    ├── run_bce_edge.sh                      # launcher riêng — KHÔNG gọi run_baseline.sh
+    └── resume_bce_edge.sh                   # resume riêng — KHÔNG gọi resume_baseline.sh
+```
+
+### 8.2. Cách chạy
+
+```bash
+# Full training (40.000 iteration, lambda_edge=0.4 mặc định)
+bash scripts/run_bce_edge.sh
+
+# Dry-run (5 iteration, val mỗi 2, 4 ảnh/split — kiểm tra luồng + 7 sanity check trước khi chạy thật)
+bash scripts/run_bce_edge.sh --dry-run
+
+# Ablation nhanh lambda_edge, KHÔNG cần sửa YAML — WORK_DIR tự thêm hậu tố _lambdaX.XX
+# (mỗi giá trị lambda_edge có checkpoint/CSV/summary.txt riêng, tự resume đúng của chính nó)
+bash scripts/run_bce_edge.sh 0.2
+bash scripts/run_bce_edge.sh 0.2 --dry-run
+
+# Nếu Kaggle mount dataset ở path khác:
+DATA_ROOT=/kaggle/input/openearthmap bash scripts/run_bce_edge.sh
+
+# Resume (session Kaggle mới, /kaggle/working đã bị xoá) — cùng cú pháp lambda:
+bash scripts/resume_bce_edge.sh
+bash scripts/resume_bce_edge.sh 0.2
+bash scripts/resume_bce_edge.sh --path /kaggle/working/.../latest_checkpoint.pth
+```
+
+Cùng trong 1 session (chưa mất `/kaggle/working`): chạy lại đúng lệnh `run_bce_edge.sh` cũ sẽ tự
+auto-resume, y hệt cơ chế của baseline (mục 5.1).
+
+Trước khi chạy thật, có thể (tuỳ chọn, không bắt buộc) đo `r_edge`/`pos_weight` "chính thức" trên
+toàn bộ epoch train:
+
+```bash
+python Tools/measure_edge_ratio.py \
+    --config configs/unet_former_resnet18_bce_edge/bce_edge.yaml \
+    --out configs/unet_former_resnet18_bce_edge/edge_ratio_stats.json
+# rồi trỏ BOUNDARY_LOSS.EDGE_STATS_FILE trong bce_edge.yaml tới file JSON này
+```
+
+Không chạy tool trên cũng không sao — `train_bce_edge.py` tự ước lượng `pos_weight` lúc khởi động
+(bounded, vài trăm batch đầu, mọi rank DDP tự tích luỹ rồi `all_reduce`), log rõ là ước lượng
+xấp xỉ (APPROXIMATE), và lưu lại đúng giá trị đã dùng vào checkpoint để resume không đo lại.
+
+### 8.3. Sanity checks tự động
+
+Ngay khi khởi động (kể cả `--dry-run`), script tự chạy 7 sanity check theo `docs/workflow_2.md` mục
+3.1 (shape/binary `edge_gt`, batch toàn-ignore → loss=0, `0 < r_edge < 1`, `pos_weight` hữu hạn dương,
+raw-logits-không-sigmoid, overlay trực quan, gradient khác 0 trên `BoundaryHead`) — fail cứng thì
+dừng training ngay (trừ overlay trực quan, chỉ định tính). Kết quả pass/fail được ghi vào
+`summary.txt` (mục "PRE-FLIGHT VALIDATION").
+
+### 8.4. Output đầu ra (thêm so với mục 6 của baseline)
+
+| File/thư mục | Nội dung |
+|---|---|
+| `summary.txt` | Báo cáo đầy đủ: header thí nghiệm, best checkpoint (mIoU-9 + mIoU-8 hậu kỳ), label/valid-pixel policy, edge-target definition, dataset-level edge statistics, BCE imbalance correction, pre-flight validation |
+| `final_summary.txt` | Cùng format baseline (tương thích ngược) |
+| `benchmark_results.csv` | Thêm cột `l_seg`, `l_edge`, `l_total` bên cạnh các cột đã có ở baseline |
+| `sanity/edge_gt_overlay_sK.png` | Overlay `edge_gt` (cyan) lên ảnh gốc — sanity check #6, tự kiểm tra bằng mắt |
+| `vis/`, `vis/boundary/` | Y hệt baseline (visualizer không đổi) |
+
+**Ghi chú phạm vi (quan trọng):** `summary.txt` để `N/A` ở 4 trường "Best validation BFScore" /
+"Best Boundary IoU @1/@2/@4" — 2 chỉ số này cần `src/utils/boundary_metrics.py` (Bước 6 của
+`docs/workflow_2.md`), **chưa xây trong thực nghiệm này** (đã chốt với Huan, xem TODO trong
+`docs/workflow_2.md` mục 4). Tiêu chí chọn best checkpoint / early stopping vẫn dùng mIoU 9-class
+(giống hệt baseline) để so sánh 2 thực nghiệm công bằng — mIoU-8 (loại Background) trong
+`summary.txt` chỉ để báo cáo, không dùng để chọn checkpoint.
