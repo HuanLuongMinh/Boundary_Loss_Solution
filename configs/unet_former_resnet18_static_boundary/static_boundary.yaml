@@ -1,0 +1,75 @@
+DATASET:
+  # Y HỆT configs/unet_former_resnet18_bce_edge/bce_edge.yaml — không split/
+  # subset, dùng thẳng toàn bộ images/train + images/val có sẵn. ROOT_DIR được
+  # resolve động lúc chạy (resolve_dataset_paths() trong src/train_static_boundary.py).
+  ROOT_DIR: "/kaggle/input/datasets/aletbm/global-land-cover-mapping-openearthmap"
+  TRAIN_IMG_DIR: "images/train"
+  TRAIN_MASK_DIR: "labels/train"
+  VAL_ROOT_DIR: "/kaggle/input/datasets/aletbm/global-land-cover-mapping-openearthmap"
+  VAL_IMG_DIR: "images/val"
+  VAL_MASK_DIR: "labels/val"
+
+MODEL:
+  # Kiến trúc UNetFormer y hệt baseline/Run 2 — src/models/unet_former_resnet18.py
+  # KHÔNG đổi. BoundaryHead (src/losses/boundary_bce.py) là nhánh phụ, không
+  # thuộc block MODEL này, xem BOUNDARY_LOSS bên dưới.
+  ARCH: "UnetFormer"
+  ENCODER: "resnet18.fb_swsl_ig1b_ft_in1k"
+  PRETRAINED: true
+  DECODE_CHANNELS: 64
+  WINDOW_SIZE: 8
+  NUM_HEADS: 8
+  MLP_RATIO: 4.0
+  DROP_PATH_RATE: 0.1
+  DROPOUT_RATIO: 0.1
+
+LOSS:
+  # L_region — y hệt baseline/Run 2, tái sử dụng nguyên CombinedLoss (CE+Dice), KHÔNG đổi.
+  TYPE: "CombinedLoss"
+  CE_WEIGHT: 1.0
+  DICE_WEIGHT: 1.0
+
+# L_total = L_region + ALPHA * (lambda1*L_BCE_edge + lambda2*L_Affinity),
+# lambda1=lambda2=1 CO DINH (docs/idea_research.md Bang 1, Run 3: "+ Static
+# Boundary"). Spec day du: docs/workflow_2.md muc 3.2 (L_Affinity)/3.4 (L_total).
+BOUNDARY_LOSS:
+  USE_BCE: true
+  USE_AFFINITY: true
+  DYNAMIC_WEIGHTS: false      # lambda1=lambda2=1 co dinh - day la Run 3, KHONG phai Run 4
+  ALPHA: 0.4                  # ke thua gia tri lambda_edge da chot o Run 2 - TAM THOI, cho
+                                # toi khi co alpha-sweep chinh thuc tren cau hinh Run 4
+  CONNECTIVITY: 4             # 4-connected, co dinh xuyen suot nghien cuu - dung chung cho
+                                # ca L_BCE_edge, L_Affinity va BoundaryMetrics
+  DILATION_RADIUS: 0          # khong dilate them - edge width = 1 pixel
+  IGNORE_INDEX: 255           # khop CombinedLoss/SegmentationMetrics hien co (no-op thuc te)
+  POS_WEIGHT_MAX: 20.0        # clip pos_weight balanced-BCE ve [1.0, 20.0] - chi dung cho L_BCE_edge
+  EDGE_STATS_FILE: ""         # de trong -> train_static_boundary.py tu uoc luong pos_weight luc khoi
+                                # dong (bounded, xem EDGE_STATS_NUM_BATCHES). Tro toi file JSON do
+                                # `python Tools/measure_edge_ratio.py --out <path>` sinh ra de dung
+                                # con so "chinh thuc" (do tren FULL epoch) thay vi uoc luong.
+  EDGE_STATS_NUM_BATCHES: 100 # chi dung khi EDGE_STATS_FILE trong/khong ton tai
+  AFFINITY_WINDOW_K: 5        # K trong cua so KxK hang xom cho L_Affinity
+  AFFINITY_DISTANCE: cosine   # "cosine" | "l2"
+  AFFINITY_MARGIN: 1.0        # margin cho contrastive term - mac dinh 1.0 cho cosine
+
+TRAIN:
+  SEED: 19                   # Y HỆT baseline.yaml/bce_edge.yaml — không đổi, để model init/shuffle/
+                              # augmentation cùng seed, chỉ khác ở loss.
+  NUM_CLASSES: 9
+  MAX_ITERS: 40000
+  VAL_INTERVAL: 4000
+  EARLY_STOPPING_PATIENCE: 4
+  BATCH_SIZE_PER_GPU: 4
+  NUM_WORKERS: 2
+  WARMUP_ITERS: 500
+
+OPTIMIZER:
+  BASE_LR: 0.0006
+  WEIGHT_DECAY: 0.01
+  GRAD_CLIP: 5.0
+
+OUTPUT:
+  # Work dir RIÊNG, không đụng work_dirs/baseline hay work_dirs/bce_edge —
+  # thực nghiệm này chạy độc lập, không ghi đè/ảnh hưởng gì tới output của
+  # 2 run trước.
+  WORK_DIR: "/kaggle/working/unetformer-resnet18-static-boundary-openearthmap/work_dirs/static_boundary"

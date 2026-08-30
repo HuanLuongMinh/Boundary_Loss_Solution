@@ -186,43 +186,6 @@ class BoundaryMetrics:
                     self._asd_sum_g2p += float(dist_to_pred[g].sum())
                     self._asd_n_gt += n_gt
 
-    def counts_tensor(self, device, dtype=torch.float64) -> torch.Tensor:
-        """Đóng gói toàn bộ accumulator thô (Boundary IoU intersection/union
-        theo lớp+khoảng cách, BF-Score TP/pred-count/gt-count, ASD tổng
-        khoảng cách+số pixel biên) thành 1 tensor 1 chiều — dùng cho
-        dist.all_reduce(SUM) giữa các rank DDP (mỗi rank tích luỹ trên phần
-        val set của riêng mình trước, qua DistributedSampler), cùng pattern
-        EdgeStatsAccumulator.counts_tensor() (src/losses/boundary_bce.py).
-        Dùng bởi các training script chạy DDP nhiều rank (vd.
-        src/train_static_boundary.py)."""
-        parts = []
-        for d in self.boundary_distances:
-            parts.append(torch.as_tensor(self._biou_inter[d], dtype=dtype))
-            parts.append(torch.as_tensor(self._biou_union[d], dtype=dtype))
-        parts.append(torch.tensor([
-            self._bf_tp_pred, self._bf_tp_gt, self._bf_n_pred, self._bf_n_gt,
-            self._asd_sum_p2g, self._asd_n_pred, self._asd_sum_g2p, self._asd_n_gt,
-        ], dtype=dtype))
-        return torch.cat(parts).to(device)
-
-    def load_counts_tensor(self, t: torch.Tensor):
-        """Nạp lại accumulator đã all_reduce SUM — GHI ĐÈ, không cộng dồn
-        thêm (gọi 1 lần duy nhất ngay sau all_reduce), cùng pattern
-        EdgeStatsAccumulator.load_counts_tensor()."""
-        t = t.detach().cpu()
-        nC = self.num_classes
-        offset = 0
-        for d in self.boundary_distances:
-            self._biou_inter[d] = t[offset:offset + nC].numpy().astype(np.int64)
-            offset += nC
-            self._biou_union[d] = t[offset:offset + nC].numpy().astype(np.int64)
-            offset += nC
-        scalars = t[offset:offset + 8].tolist()
-        self._bf_tp_pred, self._bf_tp_gt, self._bf_n_pred, self._bf_n_gt = (
-            int(scalars[0]), int(scalars[1]), int(scalars[2]), int(scalars[3]))
-        self._asd_sum_p2g, self._asd_n_pred, self._asd_sum_g2p, self._asd_n_gt = (
-            float(scalars[4]), int(scalars[5]), float(scalars[6]), int(scalars[7]))
-
     def compute(self) -> dict:
         result = {}
 

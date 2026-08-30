@@ -8,7 +8,7 @@ cho các biến thể boundary-loss sẽ làm sau, tách biệt hoàn toàn kh�
 
 > **Muốn xem nhanh tất cả thí nghiệm đã triển khai (cấu hình, kết quả, trạng thái) ở 1 chỗ?**
 > Xem `docs/tong_quan_thuc_nghiem.md`. File README này chỉ mô tả chi tiết riêng thí nghiệm Baseline
-> (mục 1-7) + thí nghiệm "Baseline vs BCE Loss" (mục 8).
+> (mục 1-7) + thí nghiệm "+ BCE Edge" (mục 8, Run 2) + thí nghiệm "+ Static Boundary" (mục 9, Run 3).
 
 ---
 
@@ -252,12 +252,13 @@ Baseline này **chỉ** gồm `L_region` (CE + Dice) — KHÔNG có boundary los
 động / DAPCN. Các thành phần đó thuộc nghiên cứu "Dynamic Boundary-Aware Loss" mô tả trong
 `docs/idea_research.md` và `docs/workflow_2.md`, được xây dựng trong các file/thư mục **mới**
 riêng biệt (không sửa bất kỳ file nào trong `src/` liệt kê ở mục 3), để không ảnh hưởng tới kết
-quả baseline này khi so sánh. Thực nghiệm đầu tiên thuộc hướng này — "Baseline vs BCE Loss"
-(Run 2 của Bảng 1) — xem mục 8 bên dưới.
+quả baseline này khi so sánh. Thực nghiệm đầu tiên thuộc hướng này — "+ BCE Edge" (Run 2 của
+Bảng 1) — xem mục 8 bên dưới. Thực nghiệm thứ hai — "+ Static Boundary" (Run 3, cộng thêm
+affinity loss lên trên Run 2) — xem mục 9.
 
 ---
 
-## 8. Thực nghiệm 2 — "Baseline vs BCE Loss" (Run 2, Bảng 1 `docs/idea_research.md`)
+## 8. Thực nghiệm 2 — "+ BCE Edge" (Run 2, Bảng 1 `docs/idea_research.md`)
 
 Thêm **duy nhất 1 thành phần** lên trên baseline (mục 1-7): boundary/edge supervision loss.
 
@@ -267,8 +268,9 @@ $$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{seg}} + \lambda_{\text{edge}} 
 - $\mathcal{L}_{\text{edge}}$ = balanced BCE trên `edge_logits` (sinh bởi 1 `BoundaryHead` phụ gắn trên
   Fused Feature của decoder) so với `edge_gt` (trích từ ground-truth mask, 4-connected, không dilate
   thêm) — pos_weight cân bằng lớp thiểu số "edge". Spec kỹ thuật đầy đủ: `docs/workflow_2.md` mục 3.1.
-- $\lambda_{\text{edge}}$ = **0.4 cố định** cho lần chạy đầu tiên này (chưa phải α* từ alpha-sweep —
-  hạ tầng đó thuộc Phase 1 đầy đủ, chưa xây) — có thể ghi đè khi chạy để ablation nhanh (xem bên dưới).
+- $\lambda_{\text{edge}}$ = đã chạy thật **2 giá trị**: 0.2 và 0.4 (ablation, xem mục 8.2) — chưa
+  phải α* từ alpha-sweep chính thức (hạ tầng đó thuộc Phase 1 đầy đủ, chưa xây), nhưng kết quả mục
+  8.5 cho thấy **0.4 tốt hơn**, được chọn làm α kế thừa cho Run 3 (mục 9).
 
 Đây là **thực nghiệm hoàn toàn độc lập** với baseline: file mới 100%, không sửa bất kỳ file nào liệt
 kê ở mục 3 (baseline vẫn `bash scripts/run_baseline.sh` chạy lại y hệt bất kỳ lúc nào), work dir
@@ -355,9 +357,144 @@ dừng training ngay (trừ overlay trực quan, chỉ định tính). Kết qu�
 | `sanity/edge_gt_overlay_sK.png` | Overlay `edge_gt` (cyan) lên ảnh gốc — sanity check #6, tự kiểm tra bằng mắt |
 | `vis/`, `vis/boundary/` | Y hệt baseline (visualizer không đổi) |
 
-**Ghi chú phạm vi (quan trọng):** `summary.txt` để `N/A` ở 4 trường "Best validation BFScore" /
-"Best Boundary IoU @1/@2/@4" — 2 chỉ số này cần `src/utils/boundary_metrics.py` (Bước 6 của
-`docs/workflow_2.md`), **chưa xây trong thực nghiệm này** (đã chốt với Huan, xem TODO trong
-`docs/workflow_2.md` mục 4). Tiêu chí chọn best checkpoint / early stopping vẫn dùng mIoU 9-class
-(giống hệt baseline) để so sánh 2 thực nghiệm công bằng — mIoU-8 (loại Background) trong
-`summary.txt` chỉ để báo cáo, không dùng để chọn checkpoint.
+### 8.5. Kết quả thật (Kaggle 2× T4, 40.000 iteration mỗi run)
+
+| Chỉ số | Baseline (α=0) | λ_edge=0.2 | λ_edge=0.4 |
+|---|---:|---:|---:|
+| mIoU-9 (best, chọn checkpoint) | 0.6551 | 0.6490 | **0.6566** |
+| mIoU-8 (loại Background, hậu kỳ) | — | 0.6093 | 0.6183 |
+| Boundary BFScore | — | 0.6082 | 0.6123 |
+| Boundary IoU @1 | — | 0.0582 | 0.0585 |
+| Boundary IoU @2 | — | 0.1169 | 0.1165 |
+| Boundary IoU @4 | — | 0.2193 | 0.2186 |
+| Thời gian train | 02h08m35s | 02h10m59s | 02h04m00s |
+
+λ_edge=0.2 làm mIoU-9 giảm nhẹ so với baseline; λ_edge=0.4 cải thiện nhẹ. → **Chốt dùng λ_edge=0.4
+làm α cho Run 3** (mục 9), kế thừa xuyên suốt tới khi có alpha-sweep chính thức trên cấu hình Run 4.
+Checkpoint/CSV/ảnh visualizer/`summary.txt` đầy đủ lưu ngoài repo tại
+`D:\Nghien Cuu Sinh\Lab\Boundary\BCE_Lambda_0.2\` và `BCE_Lambda_0.4\`.
+
+**Ghi chú phạm vi (đã cập nhật — khoảng trống cũ đã lấp):** lúc `train_bce_edge.py` chạy thật,
+`src/utils/boundary_metrics.py` **chưa tồn tại**, nên `summary.txt` sinh trực tiếp bởi script này
+vẫn để `N/A` ở 4 trường "Best validation BFScore" / "Best Boundary IoU @1/@2/@4" — điều đó **không
+đổi** (không sửa lại output cũ của 1 run đã hoàn tất). Sau khi `boundary_metrics.py` được xây xong
+(Bước 6 của `docs/workflow_2.md`), số liệu thật cho Run 2 được tính hậu kỳ bằng
+`Tools/eval_boundary_metrics.py` (forward lại `best_model.pth` qua val set) rồi điền vào 1 **file
+mới** (`*_summary_boundary_filled.txt`, qua `Tools/patch_bce_edge_summary.py` — không ghi đè
+`summary.txt` gốc) — đó là nguồn số liệu bảng trên. Từ Run 3 trở đi, `boundary_metrics.py` được
+tích hợp trực tiếp vào `validate()`, không cần bước hậu kỳ này nữa (xem mục 9.5). Tiêu chí chọn
+best checkpoint / early stopping vẫn dùng mIoU 9-class (giống hệt baseline) để so sánh công bằng —
+mIoU-8 (loại Background) trong `summary.txt` chỉ để báo cáo, không dùng để chọn checkpoint.
+
+---
+
+## 9. Thực nghiệm 3 — "+ Static Boundary" (Run 3, Bảng 1 `docs/idea_research.md`)
+
+Thêm **thành phần thứ 2** lên trên thực nghiệm 2 (mục 8): affinity loss (contrastive
+feature-distance gần biên), trọng số tĩnh.
+
+$$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{region}} + \alpha \cdot (\lambda_1 \cdot \mathcal{L}_{\text{BCE\_edge}} + \lambda_2 \cdot \mathcal{L}_{\text{Affinity}}), \quad \lambda_1 = \lambda_2 = 1 \text{ (cố định)}$$
+
+- $\mathcal{L}_{\text{region}}$, $\mathcal{L}_{\text{BCE\_edge}}$ — y hệt mục 8, tái sử dụng nguyên.
+- $\mathcal{L}_{\text{Affinity}}$ — so sánh khoảng cách đặc trưng (cosine hoặc L2) giữa mỗi pixel
+  gần biên và các hàng-xóm trong cửa sổ K×K, tính trên **Fused Feature** (64 kênh, stride 4, decoder
+  — KHÔNG dùng logits): kéo gần feature cùng nhãn GT, đẩy xa feature khác nhãn (có margin). Dùng
+  chung `extract_edge_gt()` với $\mathcal{L}_{\text{BCE\_edge}}$ để đảm bảo 1 định nghĩa biên duy
+  nhất xuyên suốt. Spec kỹ thuật đầy đủ: `docs/workflow_2.md` mục 3.2.
+- $\lambda_1 = \lambda_2 = 1$ **cố định, tĩnh** — không có dynamic schedule theo iteration (dynamic
+  $\lambda_1(t)/\lambda_2(t)$ là Run 4 "Ours", ngoài phạm vi thực nghiệm này).
+- $\alpha = 0.4$, kế thừa trực tiếp giá trị $\lambda_{\text{edge}}$ tốt nhất đã đo ở Run 2 (mục 8.5)
+  — **tạm thời**, chờ alpha-sweep chính thức chạy trên cấu hình Run 4.
+
+Đây là **thực nghiệm hoàn toàn độc lập** với Run 1/Run 2: file mới 100%, không sửa bất kỳ file nào
+của 2 thực nghiệm trước (baseline và Run 2 vẫn chạy lại y hệt bất kỳ lúc nào), work dir riêng,
+script chạy riêng.
+
+### 9.1. File mới
+
+```
+BoundaryLossSolution/
+├── src/
+│   ├── losses/
+│   │   ├── affinity.py                       # 🆕 AffinityLoss — contrastive feature-distance gần biên
+│   │   └── total_loss.py                     # 🆕 StaticBoundaryTotalLoss — gộp L_region + L_BCE_edge + L_Affinity
+│   └── train_static_boundary.py              # 🆕 script train — ĐỘC LẬP với 2 script trước, chỉ dùng
+│                                               # chung src/data, src/utils (kể cả boundary_metrics.py), model UNetFormer
+├── configs/
+│   └── unet_former_resnet18_static_boundary/
+│       └── static_boundary.yaml              # 🆕 kế thừa mọi hyperparam từ bce_edge.yaml, mở rộng
+│                                               # block BOUNDARY_LOSS (USE_AFFINITY, AFFINITY_*)
+└── scripts/
+    ├── run_static_boundary.sh                # 🆕 launcher riêng — KHÔNG gọi run_bce_edge.sh
+    └── resume_static_boundary.sh             # 🆕 resume riêng — KHÔNG gọi resume_bce_edge.sh
+```
+
+`src/utils/boundary_metrics.py` (file có sẵn từ nhiệm vụ trước, xem mục 8.5) được bổ sung THÊM 2
+method `counts_tensor()`/`load_counts_tensor()` (mirror đúng `EdgeStatsAccumulator` trong
+`boundary_bce.py`) để all-reduce đúng accumulator qua các rank DDP trước khi `compute()` — mỗi rank
+qua `DistributedSampler` chỉ thấy 1 phần val set, giống hệt lý do `SegmentationMetrics.confusion`
+phải all-reduce trước khi tính mIoU. Thay đổi thuần **additive**, không đổi hành vi cũ (self-test
+`python -m src.utils.boundary_metrics` PASS y hệt trước/sau) — có backup gốc tại
+`Tools/backups/boundary_metrics.py.bak_*`.
+
+### 9.2. Cách chạy
+
+```bash
+# Full training (40.000 iteration, alpha=0.4 mặc định)
+bash scripts/run_static_boundary.sh
+
+# Dry-run (5 iteration, val mỗi 2, 4 ảnh/split — kiểm tra luồng + 8 sanity check trước khi chạy thật)
+bash scripts/run_static_boundary.sh --dry-run
+
+# Ablation nhanh alpha, KHÔNG cần sửa YAML — WORK_DIR tự thêm hậu tố _alphaX.XX
+bash scripts/run_static_boundary.sh 0.2
+bash scripts/run_static_boundary.sh 0.2 --dry-run
+
+# Nếu Kaggle mount dataset ở path khác:
+DATA_ROOT=/kaggle/input/openearthmap bash scripts/run_static_boundary.sh
+
+# Resume (session Kaggle mới, /kaggle/working đã bị xoá) — cùng cú pháp alpha:
+bash scripts/resume_static_boundary.sh
+bash scripts/resume_static_boundary.sh 0.2
+bash scripts/resume_static_boundary.sh --path /kaggle/working/.../latest_checkpoint.pth
+```
+
+Cùng trong 1 session (chưa mất `/kaggle/working`): chạy lại đúng lệnh `run_static_boundary.sh` cũ
+sẽ tự auto-resume, y hệt cơ chế của baseline (mục 5.1) và Run 2.
+
+### 9.3. Sanity checks tự động (8, thêm 1 so với Run 2)
+
+7 check của Run 2 (mục 8.3) + **check #8 mới**: gradient khác 0 trên `model.base.frh` (decoder, nơi
+sinh Fused Feature) qua $\mathcal{L}_{\text{Affinity}}$ — xác nhận affinity loss thực sự lan truyền
+gradient tới decoder, không chỉ tới `BoundaryHead`. Fail cứng thì dừng training ngay (trừ overlay
+trực quan). Kết quả pass/fail ghi vào `summary.txt` (mục "PRE-FLIGHT VALIDATION").
+
+### 9.4. Output đầu ra (thêm so với mục 8.4 của Run 2)
+
+| File/thư mục | Nội dung |
+|---|---|
+| `summary.txt` | Thêm khối "AFFINITY LOSS CONFIGURATION" (window/distance/margin), 4 thành phần loss (`L_region/L_bce/L_affinity/L_total`), **boundary metrics THẬT** (không N/A — xem mục 9.5) |
+| `benchmark_results.csv` | Thêm cột `l_region`, `l_bce`, `l_affinity`, `l_total`, `bf_score`, `boundary_iou_d1/d2/d4`, `asd` |
+| `vis/`, `vis/boundary/`, `sanity/edge_gt_overlay_sK.png` | Y hệt Run 2 |
+
+### 9.5. Boundary metrics — tích hợp trực tiếp, không cần hậu kỳ
+
+Khác Run 2 (phải chạy `Tools/eval_boundary_metrics.py` sau khi train xong rồi patch vào
+`summary.txt`), `validate()` của Run 3 gọi `BoundaryMetrics(boundary_distances=(1,2,4))` **ngay
+trong vòng lặp training**, all-reduce đúng qua các rank DDP (mục 9.1), ghi số liệu thật (BFScore,
+Boundary IoU @1/@2/@4, ASD) vào `benchmark_results.csv`/`summary.txt` mỗi lần validate.
+
+### 9.6. Trạng thái hiện tại
+
+Code hoàn chỉnh (31/8/2026), đã verify cục bộ (máy dev không có GPU/dataset thật, chỉ chạy trên
+Kaggle):
+
+| Kịch bản | Kết quả |
+|---|---|
+| `python -m src.losses.affinity` | ✅ PASS |
+| `python -m src.losses.total_loss` (model UNetFormer thật) | ✅ PASS — loss hữu hạn, gradient chảy tới cả backbone/BoundaryHead/decoder |
+| `python -m src.utils.boundary_metrics` | ✅ PASS (không đổi sau khi thêm 2 method DDP) |
+| `--dry-run`, 2 rank DDP thật (dataset GeoTIFF giả lập, CPU) | ✅ Không lỗi/NaN, boundary metrics tính đúng qua all-reduce (đã verify N_valid/N_edge nhân đôi chính xác giữa 1-rank và 2-rank) |
+
+**Việc còn lại:** chạy full 40.000 iteration thật trên Kaggle 2× T4
+(`bash scripts/run_static_boundary.sh`) — chưa có kết quả mIoU/boundary metrics thật cho Run 3.
