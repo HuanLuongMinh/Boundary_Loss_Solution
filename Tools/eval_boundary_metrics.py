@@ -34,6 +34,19 @@ Cách dùng (chạy từ REPO ROOT — cả trên Kaggle notebook lẫn máy cá
         --model-type bce_edge \\
         --output docs/results/run2_lambda04_boundary_metrics.json
 
+    # Run 3 (hoặc Run 3b) — Static Boundary, --model-type static_boundary
+    # (StaticBoundaryUNetFormer, src/train_static_boundary.py — Run 3b dùng
+    # chung đúng class này, cùng key state_dict, xem
+    # docs/run3b_spec_lambda2_05.md mục 7). JSON output đã có sẵn per-class
+    # Boundary IoU (boundary_iou_dX_per_class) và ASD 2 chiều
+    # (asd_pred_to_gt/asd_gt_to_pred) — không cần script riêng cho việc phụ
+    # mục 7 của spec.
+    python Tools/eval_boundary_metrics.py \\
+        --config configs/unet_former_resnet18_static_boundary/static_boundary.yaml \\
+        --checkpoint /path/to/best_model.pth \\
+        --model-type static_boundary \\
+        --output docs/results/run3_boundary_metrics.json
+
     # Nếu dataset mount ở path khác path mặc định trong config — override trực
     # tiếp, không cần sửa YAML:
         --data-root /kaggle/input/datasets/aletbm/global-land-cover-mapping-openearthmap
@@ -130,7 +143,13 @@ def build_eval_model(cfg: dict, model_type: str):
     'bce_edge' -> BCEEdgeUNetFormer (base UNetFormer + BoundaryHead), import
     trực tiếp từ src.train_bce_edge (tái sử dụng đúng class đã train ra
     checkpoint, đảm bảo khớp 100% key state_dict 'base.*'/'boundary_head.*'
-    — không định nghĩa lại wrapper này ở đây)."""
+    — không định nghĩa lại wrapper này ở đây). model_type='static_boundary'
+    -> StaticBoundaryUNetFormer (Run 3 VÀ Run 3b dùng chung 1 kiến trúc wrapper
+    giống hệt nhau — base UNetFormer + BoundaryHead, cùng key state_dict —
+    import từ src.train_static_boundary, thêm bổ sung THUẦN ADDITIVE cho việc
+    phụ mục 7 docs/run3b_spec_lambda2_05.md: eval hậu kỳ per-class Boundary
+    IoU cho checkpoint Run 3 mà không cần train lại). KHÔNG đổi hành vi
+    'baseline'/'bce_edge' đã có."""
     cfg['MODEL']['PRETRAINED'] = False  # khỏi tải ImageNet weight qua mạng — sắp bị ghi đè hết
     if model_type == 'baseline':
         return build_model(cfg)
@@ -140,8 +159,11 @@ def build_eval_model(cfg: dict, model_type: str):
         # và import module không tự chạy main() (được bọc trong __main__ guard).
         from src.train_bce_edge import BCEEdgeUNetFormer
         return BCEEdgeUNetFormer(cfg)
+    elif model_type == 'static_boundary':
+        from src.train_static_boundary import StaticBoundaryUNetFormer
+        return StaticBoundaryUNetFormer(cfg)
     else:
-        raise ValueError(f"--model-type phải là 'baseline' hoặc 'bce_edge', nhận: {model_type}")
+        raise ValueError(f"--model-type phải là 'baseline'/'bce_edge'/'static_boundary', nhận: {model_type}")
 
 
 @torch.no_grad()
@@ -164,6 +186,8 @@ def run_eval(model, model_type: str, loader, device, num_classes: int,
 
         if model_type == 'bce_edge':
             logits, _edge_logits = model(images)  # không cần edge_logits cho metric này
+        elif model_type == 'static_boundary':
+            logits, _edge_logits, _fused_feature = model(images)  # không cần cho metric này
         else:
             logits = model(images)
 
@@ -180,7 +204,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--config', required=True, help='Đúng YAML đã dùng lúc train run này')
     ap.add_argument('--checkpoint', required=True, help='Đường dẫn best_model.pth')
-    ap.add_argument('--model-type', required=True, choices=['baseline', 'bce_edge'])
+    ap.add_argument('--model-type', required=True, choices=['baseline', 'bce_edge', 'static_boundary'])
     ap.add_argument('--data-root', default=None, help='Override DATASET.ROOT_DIR/VAL_ROOT_DIR (tuỳ chọn)')
     ap.add_argument('--batch-size', type=int, default=4)
     ap.add_argument('--num-workers', type=int, default=2)

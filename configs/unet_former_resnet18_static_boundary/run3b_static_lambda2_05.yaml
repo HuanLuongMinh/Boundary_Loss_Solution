@@ -1,0 +1,76 @@
+DATASET:
+  # Y HỆT static_boundary.yaml/bce_edge.yaml — không split/subset, dùng thẳng
+  # toàn bộ images/train + images/val có sẵn. ROOT_DIR được resolve động lúc
+  # chạy (resolve_dataset_paths() trong src/train_static_boundary_weighted.py).
+  ROOT_DIR: "/kaggle/input/datasets/aletbm/global-land-cover-mapping-openearthmap"
+  TRAIN_IMG_DIR: "images/train"
+  TRAIN_MASK_DIR: "labels/train"
+  VAL_ROOT_DIR: "/kaggle/input/datasets/aletbm/global-land-cover-mapping-openearthmap"
+  VAL_IMG_DIR: "images/val"
+  VAL_MASK_DIR: "labels/val"
+
+MODEL:
+  # Kiến trúc UNetFormer y hệt baseline/Run 2/Run 3 — src/models/unet_former_resnet18.py
+  # KHÔNG đổi. BoundaryHead (src/losses/boundary_bce.py) là nhánh phụ, không
+  # thuộc block MODEL này, xem BOUNDARY_LOSS bên dưới.
+  ARCH: "UnetFormer"
+  ENCODER: "resnet18.fb_swsl_ig1b_ft_in1k"
+  PRETRAINED: true
+  DECODE_CHANNELS: 64
+  WINDOW_SIZE: 8
+  NUM_HEADS: 8
+  MLP_RATIO: 4.0
+  DROP_PATH_RATE: 0.1
+  DROPOUT_RATIO: 0.1
+
+LOSS:
+  # L_region — y hệt baseline/Run 2/Run 3, tái sử dụng nguyên CombinedLoss (CE+Dice), KHÔNG đổi.
+  TYPE: "CombinedLoss"
+  CE_WEIGHT: 1.0
+  DICE_WEIGHT: 1.0
+
+# Run 3b (docs/run3b_spec_lambda2_05.md) — điểm giữa của đường quét affinity
+# 3 điểm (alpha_affinity in {0, 0.2, 0.4}). ĐÚNG MỘT biến thay đổi so với Run
+# 3 (static_boundary.yaml): LAMBDA2_STATIC 1.0 -> 0.5 (alpha_affinity hiệu
+# dụng 0.4 -> 0.2). Mọi giá trị khác GIỮ NGUYÊN y hệt Run 3.
+#
+# L_total = L_region + ALPHA * (LAMBDA1_STATIC*L_BCE_edge + LAMBDA2_STATIC*L_Affinity)
+#         = L_region + 0.4 * (1.0*L_BCE_edge + 0.5*L_Affinity)
+#         = L_region + 0.4*L_BCE_edge + 0.2*L_Affinity
+BOUNDARY_LOSS:
+  USE_BCE: true
+  USE_AFFINITY: true
+  DYNAMIC_WEIGHTS: false        # static, KHONG phai Run 4 (dynamic lambda1(t)/lambda2(t))
+  ALPHA: 0.4                    # GIU NGUYEN - y het Run 2/Run 3
+  LAMBDA1_STATIC: 1.0           # GIU NGUYEN - giu L_BCE_edge o dung cuong do Run 2/Run 3
+  LAMBDA2_STATIC: 0.5           # <-- BIEN DUY NHAT THAY DOI so voi Run 3 (tu 1.0 xuong 0.5)
+  CONNECTIVITY: 4               # GIU NGUYEN
+  DILATION_RADIUS: 0            # GIU NGUYEN
+  IGNORE_INDEX: 255             # GIU NGUYEN
+  POS_WEIGHT_MAX: 20.0          # GIU NGUYEN
+  EDGE_STATS_FILE: ""           # de trong -> tu uoc luong pos_weight luc khoi dong, giong Run 3
+  EDGE_STATS_NUM_BATCHES: 100   # GIU NGUYEN
+  AFFINITY_WINDOW_K: 5          # GIU NGUYEN
+  AFFINITY_DISTANCE: cosine     # GIU NGUYEN
+  AFFINITY_MARGIN: 1.0          # GIU NGUYEN
+
+TRAIN:
+  SEED: 19                     # GIU NGUYEN TUYET DOI - y het baseline/bce_edge/static_boundary
+  NUM_CLASSES: 9
+  MAX_ITERS: 40000
+  VAL_INTERVAL: 4000
+  EARLY_STOPPING_PATIENCE: 4
+  BATCH_SIZE_PER_GPU: 4
+  NUM_WORKERS: 2
+  WARMUP_ITERS: 500
+
+OPTIMIZER:
+  BASE_LR: 0.0006
+  WEIGHT_DECAY: 0.01
+  GRAD_CLIP: 5.0
+
+OUTPUT:
+  # Work dir RIÊNG, không đụng work_dirs/static_boundary (Run 3) hay bất kỳ
+  # work_dir nào khác — thực nghiệm này chạy độc lập, không ghi đè/ảnh hưởng
+  # gì tới output của các run trước.
+  WORK_DIR: "/kaggle/working/unetformer-resnet18-static-boundary-weighted-openearthmap/work_dirs/run3b_lambda2_05"

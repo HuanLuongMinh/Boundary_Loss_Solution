@@ -498,3 +498,234 @@ Kaggle):
 
 **Việc còn lại:** chạy full 40.000 iteration thật trên Kaggle 2× T4
 (`bash scripts/run_static_boundary.sh`) — chưa có kết quả mIoU/boundary metrics thật cho Run 3.
+
+---
+
+## 10. Thực nghiệm 3b — "λ₂ = 0.5 cho Affinity" (Run 3b, điểm giữa đường quét affinity)
+
+Đặc tả đầy đủ: `docs/run3b_spec_lambda2_05.md`. Đường quét hệ số affinity cần 3 điểm cách đều
+(α_affinity ∈ {0, 0.2, 0.4}) để biết affinity loss có "vùng ngọt" hay chỉ là núm đánh đổi tuyến
+tính. Hai đầu mút đã có (BCE λ=0.4 của mục 8 ↔ α_affinity=0; Run 3 mục 9 ↔ α_affinity=0.4) — Run 3b
+là điểm giữa.
+
+$$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{region}} + \alpha \cdot (\lambda_1 \cdot \mathcal{L}_{\text{BCE\_edge}} + \lambda_2 \cdot \mathcal{L}_{\text{Affinity}})$$
+
+$$\alpha = 0.4,\quad \lambda_1 = 1.0 \text{ (y hệt Run 3)},\quad \lambda_2 = 0.5 \text{ (BIẾN DUY NHẤT thay đổi)}$$
+
+$$\Rightarrow \alpha_{\text{bce, hiệu dụng}} = 0.4 \text{ (không đổi)}, \quad \alpha_{\text{affinity, hiệu dụng}} = 0.4 \times 0.5 = 0.2 \text{ (giảm một nửa so với Run 3)}$$
+
+Công thức trong bài báo **không đổi một ký tự nào** — `L_region + α(λ₁L_BCE + λ₂L_Aff)` vốn đã có
+sẵn chỗ cho λ₁/λ₂ (`docs/workflow_2.md` mục 3.3/3.4); Run 3 chỉ mới hard-code λ₁=λ₂=1. Run 3b báo
+cáo λ₂=0.5 thay vì 1.0, không đẻ thêm tham số mới.
+
+**Nguyên tắc cài đặt:** người dùng yêu cầu **không sửa** bất kỳ file nào của Run 3
+(`src/losses/total_loss.py`, `src/train_static_boundary.py`, `configs/.../static_boundary.yaml`,
+`scripts/run_static_boundary.sh`, `scripts/resume_static_boundary.sh`) — kể cả theo kiểu thêm tham
+số mặc định tương thích ngược — để Run 3 tái lập lại được y hệt bất kỳ lúc nào, độc lập hoàn toàn
+với Run 3b. Toàn bộ Run 3b là **file mới 100%**, giống đúng quy ước baseline/Run 2/Run 3 đã dùng
+xuyên suốt repo.
+
+### 10.1. File mới
+
+```
+BoundaryLossSolution/
+├── src/
+│   ├── losses/
+│   │   └── total_loss_weighted.py            # 🆕 StaticBoundaryTotalLossWeighted — nhận
+│   │                                          #    lambda1_static/lambda2_static (mặc định 1.0/1.0,
+│   │                                          #    default = tái lập y hệt StaticBoundaryTotalLoss/Run 3)
+│   └── train_static_boundary_weighted.py     # 🆕 script train — ĐỘC LẬP với train_static_boundary.py,
+│                                              #    chỉ dùng chung src/data, src/utils, model UNetFormer,
+│                                              #    src/losses/boundary_bce.py + affinity.py (đã là file
+│                                              #    dùng chung sẵn có, không phải file riêng của Run 3)
+├── configs/
+│   └── unet_former_resnet18_static_boundary/
+│       └── run3b_static_lambda2_05.yaml      # 🆕 kế thừa nguyên static_boundary.yaml, chỉ đổi
+│                                              #    LAMBDA2_STATIC 1.0 -> 0.5 + WORK_DIR riêng
+└── scripts/
+    ├── run_static_boundary_weighted.sh       # 🆕 launcher riêng — KHÔNG gọi run_static_boundary.sh
+    └── resume_static_boundary_weighted.sh    # 🆕 resume riêng — KHÔNG gọi resume_static_boundary.sh
+```
+
+Bổ sung **thuần additive** (không đổi hành vi cũ) vào `Tools/eval_boundary_metrics.py`: thêm
+`--model-type static_boundary` (import `StaticBoundaryUNetFormer` từ `src/train_static_boundary.py`,
+không sửa file đó) — dùng cho việc phụ mục 10.7 bên dưới, retro-fit per-class Boundary IoU/ASD 2
+chiều cho checkpoint Run 2/Run 3 đã có sẵn mà không cần train lại.
+
+### 10.2. Cách chạy
+
+```bash
+# Full training (40.000 iteration, alpha=0.4/lambda1=1.0/lambda2=0.5 mặc định trong config)
+bash scripts/run_static_boundary_weighted.sh
+
+# Dry-run (5 iteration, val mỗi 2, 4 ảnh/split — kiểm tra luồng + 12 sanity check trước khi chạy thật)
+bash scripts/run_static_boundary_weighted.sh --dry-run
+
+# Ablation nhanh alpha/lambda1/lambda2, KHÔNG cần sửa YAML — WORK_DIR tự thêm hậu tố
+bash scripts/run_static_boundary_weighted.sh --lambda2 0.3
+bash scripts/run_static_boundary_weighted.sh --lambda2 0.3 --dry-run
+
+# Kiểm tra tương thích ngược (mục 6.3 spec) — trỏ CONFIG vào config Run 3 cũ, không đổi Run 3:
+CONFIG=configs/unet_former_resnet18_static_boundary/static_boundary.yaml \
+  bash scripts/run_static_boundary_weighted.sh --dry-run
+
+# Nếu Kaggle mount dataset ở path khác:
+DATA_ROOT=/kaggle/input/openearthmap bash scripts/run_static_boundary_weighted.sh
+
+# Resume (session Kaggle mới, /kaggle/working đã bị xoá):
+bash scripts/resume_static_boundary_weighted.sh
+bash scripts/resume_static_boundary_weighted.sh --lambda2 0.3
+bash scripts/resume_static_boundary_weighted.sh --path /kaggle/working/.../latest_checkpoint.pth
+```
+
+### 10.3. Sanity checks tự động (12, thêm 2 so với Run 3)
+
+10 check của Run 3 (mục 9.3 + 8 của Run 2) + **2 check mới** (mục 6.1/6.2 `docs/run3b_spec_lambda2_05.md`):
+
+- **#9 — đồng nhất công thức loss:** `l_total` phải khớp đúng
+  `l_region + alpha*(lambda1*l_bce + lambda2*l_affinity)` (sai số < 1e-5) — bắt lỗi hệ số không tới
+  được loss.
+- **#10 — λ₂ thực sự có hiệu lực:** `alpha_affinity_effective` (log tường minh mỗi 100 iter) phải
+  đúng bằng `alpha*lambda2` tính từ config — với config mặc định phải ra 0.2.
+
+Fail cứng thì dừng training ngay (trừ overlay trực quan). Kết quả pass/fail ghi vào `summary.txt`
+(mục "PRE-FLIGHT VALIDATION").
+
+### 10.4. 4 checkpoint thay vì 1 — khắc phục lệch mốc iteration
+
+Run 3 báo cáo tại iter 36000 (best mIoU) trong khi Run 1/2 báo cáo tại iter 40000 — so sánh
+boundary-metric giữa các run bị lệch mốc, có thể **đảo dấu** tuỳ checkpoint được chọn. Run 3b lưu
+đủ 4 checkpoint (raw `state_dict`, `torch.save` thẳng — tương thích ngược với mọi tool eval hiện
+có) trong `WORK_DIR`:
+
+| File | Tiêu chí |
+|---|---|
+| `best_miou.pth` | mIoU-9 cao nhất |
+| `best_bfscore.pth` | BFScore cao nhất |
+| `best_bareland.pth` | IoU lớp Bareland cao nhất (lớp yếu nhất, biến động mạnh nhất) |
+| `final_iter<N>.pth` | luôn lưu vòng cuối cùng, bất kể chỉ số — cho so sánh cùng iteration giữa mọi run |
+
+Kèm `checkpoint_index.json` (map từng khoá ở trên → `{file, iter, round, metrics}`, `metrics` là
+toàn bộ hàng CSV của vòng đó) — không còn phải đoán checkpoint nào ứng với iteration nào.
+
+### 10.5. `benchmark_results.csv` — đủ cột cho mean±std hậu kỳ
+
+10 hàng (1/vòng validate, không chỉ hàng best): `miou9`/`miou8`, 9 `iou_<ClassName>`, `bf_score`/
+`bf_precision`/`bf_recall`, `biou_d1`/`d2`/`d4` (mean) + 27 cột `biou_dX_<ClassName>` (per-class,
+lấy trực tiếp từ `BoundaryMetrics.compute()` — đã có sẵn, chỉ mới lộ ra CSV), `asd` + `asd_pred_to_gt`
++ `asd_gt_to_pred` (2 chiều — cũng đã có sẵn trong `BoundaryMetrics`, Run 3 chưa ghi ra), 4 thành
+phần loss, `lambda1`/`lambda2`/`alpha` + 2 giá trị effective, và `is_best_miou`/`is_best_bfscore`/
+`is_best_bareland`/`is_final`. Boundary metrics tính **đầy đủ mọi vòng** (không rút gọn 4 vòng cuối)
+— Run 3 (kiến trúc/val-set/tham số boundary giống hệt) đã tính đủ mọi vòng và hoàn thành 40k
+iteration trong 03h22m, nên Run 3b giữ nguyên cách làm đã kiểm chứng thay vì thêm nhánh rút gọn
+chưa test.
+
+### 10.6. `summary.txt` — khối 4-checkpoint + mean±std
+
+Thay khối "FINAL EVALUATION — BEST CHECKPOINT" đơn lẻ của Run 3 bằng khối "EVALUATION — 4
+CHECKPOINTS" (bảng 4 hàng) + khối "MEAN ± STD — 4 VÒNG CUỐI" (mIoU-9/mIoU-8/BFScore/BIoU@2/BIoU@4/
+ASD/Bareland + toàn bộ 9 per-class IoU, kèm tên lớp), cộng 5 dòng hệ số (`alpha`/`lambda1`/`lambda2`/
+2 giá trị effective).
+
+### 10.7. Việc phụ — eval hậu kỳ trên checkpoint đã có (CPU, song song, không tốn GPU)
+
+**Cập nhật 4/9/2026:** lỗ hổng ASD đã được lấp bằng dữ liệu thật (`ablation.xlsx`, ngoài repo).
+Bảng 4 điểm cho thấy **ASD là chỉ số DUY NHẤT affinity tạo hiệu ứng thật ngoài nhiễu** (2.5σ, không
+đảo dấu khi so cùng iteration), trong khi BFScore/BIoU@d gần như **mù** với hiệu ứng này (bão hoà
+ngoài ngưỡng d) và mIoU chỉ đo cái giá phải trả:
+
+| Method | ASD (px) | Δ vs baseline | Δ vs BCE λ=0.4 |
+|---|---:|---:|---:|
+| Baseline | 4.9732 | — | |
+| BCE λ=0.2 | 4.8347 | −0.139 (−2.8%) | |
+| BCE λ=0.4 | 4.9128 | −0.060 (−1.2%) | — |
+| Static (α_aff=0.4) | 4.6251 | −0.348 (−7.0%) | **−0.288 (−5.9%)** |
+
+BCE đóng góp 17% mức giảm ASD, **affinity đóng góp 83%** — gần như toàn bộ hiệu ứng. **Giả thuyết cơ
+chế:** ASD nhạy với đuôi phân phối (mảnh biên giả xa mọi biên thật đóng góp rất lớn), còn BIoU@d/
+BFScore bão hoà ngoài ngưỡng d nên mù với loại lỗi này ⇒ **BCE định vị biên, affinity dập biên giả ở
+vùng trong** — hai vai trò bổ sung nhau, không chồng lấn.
+
+Giả thuyết trên đưa ra 2 dự đoán định lượng, đo được ngay trên checkpoint đã có (0 GPU) — dùng
+`Tools/eval_boundary_metrics.py` (đã có `--model-type static_boundary`, mục 10.1): **mỗi lệnh dưới
+đây sinh 1 JSON đã chứa sẵn cả 2 dự đoán này lẫn per-class Boundary IoU (mục 7.3 spec)** — không cần
+script/cờ riêng nào khác. **BCE λ=0.4 và λ=0.2 đã chạy xong**, JSON nằm sẵn tại
+`docs/results/run2_lambda04_boundary_metrics.json` và `docs/results/run2_lambda02_boundary_metrics.json`
+(chạy trên Kaggle, checkpoint từ dataset `huanluong/bce-lambda0-4`/`bce-lambda-0-2`). **Còn thiếu
+đúng 1 lệnh — Static (Run 3)** — chạy trên Kaggle (nơi có sẵn dataset OpenEarthMap đúng split đã
+train), tải checkpoint `best_model.pth` của Run 3 lên làm Kaggle dataset input rồi chạy:
+
+```bash
+# Static (Run 3) — VIỆC CÒN LẠI DUY NHẤT của mục 10.7
+python Tools/eval_boundary_metrics.py \
+    --config configs/unet_former_resnet18_static_boundary/static_boundary.yaml \
+    --checkpoint <path/to/run3>/best_model.pth --model-type static_boundary \
+    --output docs/results/run3_boundary_metrics.json
+```
+
+Tham khảo (đã chạy xong, để đối chiếu cú pháp):
+
+```bash
+python Tools/eval_boundary_metrics.py \
+    --config configs/unet_former_resnet18_bce_edge/bce_edge.yaml \
+    --checkpoint <path/to/run2_lambda04>/best_model.pth --model-type bce_edge \
+    --output docs/results/run2_lambda04_boundary_metrics.json
+```
+
+Đối chiếu **2 dự đoán** trong JSON của BCE λ=0.4 và Static:
+
+1. **`asd_pred_to_gt` vs `asd_gt_to_pred`:** nếu giả thuyết đúng, lợi ích của affinity tập trung ở
+   chiều **pred→gt** (biên dự đoán thừa, nằm xa GT — baseline: pred→gt 5.6797 vs gt→pred 4.2668).
+   Nếu lợi ích nằm ở gt→pred thì cơ chế thật là "bắt biên bị bỏ sót", không phải "dập biên giả" —
+   phải viết lại diễn giải.
+2. **`bf_precision` vs `bf_recall`:** nếu đúng, affinity **nâng precision nhiều hơn recall**
+   (baseline: P 0.6188 / R 0.5888). Nếu nâng recall là chính thì mâu thuẫn với giả thuyết.
+
+Và câu hỏi per-class (mục 7.3 spec, đọc từ `boundary_iou_dX_per_class` trong cùng JSON): **Water có
+BIoU tăng trong khi IoU vùng giảm không?** Nếu có, nhất quán với giả thuyết "dập biên giả, trả giá
+vùng trong". Nếu Water giảm cả hai thì chỉ đơn giản là hư hại.
+
+### 10.8. Quy tắc đọc kết quả (chốt TRƯỚC khi có số)
+
+**ASD là chỉ số CHÍNH của run này** (đổi so với bản spec trước) — lý do: đây là chỉ số duy nhất
+affinity tạo hiệu ứng ngoài nhiễu và không đảo dấu (mục 10.7), trong khi BFScore/BIoU đã chứng minh
+mù với hiệu ứng đó, còn mIoU đo cái giá phải trả. Câu hỏi thật của Run 3b:
+
+> **Ở λ₂=0.5, giữ được bao nhiêu phần lợi ích ASD, và trả lại được bao nhiêu phần chi phí mIoU?**
+
+So sánh dùng **mean±std 4 vòng cuối** và dòng **final@40000**, không dùng một checkpoint best đơn lẻ.
+
+| | ASD (px) | mIoU-9 | mIoU-8 | BFScore | BIoU@4 | Bareland |
+|---|---:|---:|---:|---:|---:|---:|
+| **BCE λ=0.4** (α_aff=0, đầu mút trái) | 4.9128 | 0.6566 | 0.6183 | 0.6123 | 0.2186 | 0.3452 |
+| **Static** (α_aff=0.4, đầu mút phải, mean±std 3 vòng cuối) | 4.713 ± 0.081 | 0.6503 ± 0.0062 | — | 0.6133 ± 0.0028 | 0.2147 ± 0.0058 | 0.320 ± 0.023 |
+| **Run 3b** (α_aff=0.2) — điểm cần đo | ? | ? | ? | ? | ? | ? |
+
+Nội suy tuyến tính giữa 2 đầu mút: ASD ≈ **4.81**, mIoU-9 ≈ **0.6535** — mốc "không có gì đặc biệt".
+
+| Kết quả tại λ₂=0.5 | Diễn giải | Bước tiếp |
+|---|---|---|
+| **ASD ≤ 4.75** và **mIoU-9 ≥ 0.6545** | Vùng ngọt tồn tại — quan hệ ASD–α phi tuyến, lợi ích bão hoà sớm còn chi phí tuyến tính | Chốt λ₂\*=0.5, sang Run 4 (Dynamic) với `λ₂_end=0.5` — trở thành cấu hình đề xuất của bài |
+| ASD ≈ 4.78–4.84 và mIoU ≈ 0.653–0.654 (bám sát nội suy tuyến tính) | Affinity là núm đánh đổi tuyến tính ASD↔mIoU, không có vùng ngọt | Vẫn có giá trị: phát biểu được đánh đổi định lượng có kiểm soát. Chọn điểm vận hành theo mục tiêu (α_aff=0.4 nếu ưu tiên ASD), sang Run 4. **Không** quét thêm α |
+| ASD ≥ 4.88 (mất gần hết lợi ích dù chỉ giảm nửa cường độ) | Hiệu ứng ASD có ngưỡng, cần cường độ cao | Giữ α_aff=0.4 làm cấu hình đề xuất; chuyển ngân sách sang thí nghiệm sửa vùng lấy mẫu (dilation/max-pool) thay vì hạ α |
+| ASD ≥ 4.91 (bằng/tệ hơn BCE) và mIoU cũng không hồi | Phi đơn điệu — còn yếu tố ngoài cường độ | Dừng quét α, quay lại 2 phép đo mục 10.7 trước khi chi thêm GPU |
+
+Trong mọi nhánh trừ nhánh cuối, kết quả vẫn viết được vào bài — chỉ khác nhau ở phát biểu "có cấu
+hình tối ưu" hay "có một đánh đổi định lượng". Ghi kết quả vào tài liệu mới, đối chiếu đủ 3 điểm trên
+cả 6 chỉ số ở bảng trên, kèm mean±std + dòng final@40000 — không kết luận từ 1 checkpoint đơn lẻ.
+
+### 10.9. Trạng thái hiện tại
+
+Code hoàn chỉnh, đã verify cục bộ (máy dev không có GPU/dataset thật, chỉ chạy trên Kaggle):
+
+| Kịch bản | Kết quả |
+|---|---|
+| `python -m src.losses.total_loss_weighted` (model UNetFormer thật) | ✅ PASS — default λ₁=λ₂=1.0 khớp tuyệt đối `StaticBoundaryTotalLoss` (Run 3) trên cùng input; λ₂=0.5 cho `alpha_affinity_effective=0.2` đúng công thức, gradient chảy tới cả backbone/BoundaryHead/decoder |
+| `--dry-run`, 1 rank (dataset GeoTIFF giả lập, CPU, config Run 3b) | ✅ 12/12 sanity check PASS, đủ 4 checkpoint + `checkpoint_index.json` sinh đúng và `load_state_dict` được (strict), CSV đủ cột, `summary.txt` có khối 4-checkpoint + mean±std |
+| `--dry-run`, 1 rank, trỏ vào `static_boundary.yaml` gốc (không có `LAMBDA1_STATIC`/`LAMBDA2_STATIC`) | ✅ Tự dùng default λ₁=λ₂=1.0, `alpha_affinity_effective=0.4` — xác nhận tương thích ngược (mục 6.3 spec) |
+| Run 1/2/3 không bị ảnh hưởng | ✅ `git status` xác nhận không file nào của Run 1/2/3 bị sửa |
+
+**Việc còn lại:** chạy full 40.000 iteration thật trên Kaggle 2× T4
+(`bash scripts/run_static_boundary_weighted.sh`, ~3.5h dự kiến) + 1 lệnh eval hậu kỳ còn thiếu (mục
+10.7, CPU, không tốn GPU, cho Static/Run 3 — 2 lệnh BCE λ=0.2/0.4 đã chạy xong, JSON tại
+`docs/results/`).
