@@ -232,6 +232,20 @@ def main():
 
     device = torch.device(args.device) if args.device else torch.device(
         'cuda' if torch.cuda.is_available() else 'cpu')
+    if device.type == 'cuda':
+        # torch.cuda.is_available() chỉ kiểm tra driver/runtime CUDA có sẵn,
+        # KHÔNG kiểm tra build PyTorch hiện tại có kernel biên dịch sẵn cho
+        # đúng compute capability của GPU đang gắn (vd P100/sm_60 bị drop
+        # khỏi 1 số build PyTorch mới) — lỗi đó chỉ lộ ra khi thực sự launch
+        # kernel (torch.AcceleratorError/RuntimeError 'no kernel image').
+        # Test bằng 1 phép tính nhỏ ở đây để phát hiện sớm, rồi tự rơi về CPU
+        # thay vì crash giữa chừng lúc đã nạp xong checkpoint.
+        try:
+            (torch.zeros(1, device=device) + 1).sum().item()
+        except Exception as e:
+            print(f"CUDA không dùng được với build PyTorch hiện tại ({type(e).__name__}: {e}) "
+                  f"— chuyển sang CPU.")
+            device = torch.device('cpu')
     print(f"Device: {device}")
 
     ds = cfg['DATASET']
