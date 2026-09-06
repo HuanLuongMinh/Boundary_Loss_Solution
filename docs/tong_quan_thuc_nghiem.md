@@ -1,9 +1,9 @@
 # Tổng quan các thí nghiệm đã triển khai
 
 Tài liệu này tổng hợp **tất cả thí nghiệm đã có code chạy được** trong repo `BoundaryLossSolution`
-tính đến thời điểm cập nhật (31/8/2026), cho đề tài "Dynamic Boundary-Aware Loss via Adaptive
+tính đến thời điểm cập nhật (**6/9/2026**), cho đề tài "Dynamic Boundary-Aware Loss via Adaptive
 BCE-Affinity Coupling" (`docs/idea_research.md`). Đây là tài liệu **tra cứu nhanh** — chi tiết đầy
-đủ từng phần nằm ở `README.md` (thí nghiệm 1-3, 3b) và `docs/workflow_2.md` (đặc tả kỹ thuật/kế
+đủ từng phần nằm ở `README.md` (thí nghiệm 1-3, 3b, 4) và `docs/workflow_2.md` (đặc tả kỹ thuật/kế
 hoạch các bước tiếp theo).
 
 ---
@@ -18,19 +18,22 @@ L_total = L_seg + α · L_boundary_dynamic          (công thức đề cương,
 |---|---|---|---|---|
 | 1 | **Baseline** | `L_total = L_seg` (CE + Dice thuần, α=0) | ✅ Đã chạy xong 28/8/2026 | **0.6551** |
 | 2 | **+ BCE Edge** (Run 2 Bảng 1) | `L_total = L_seg + λ_edge · L_edge` | ✅ Đã chạy xong 40k iter trên Kaggle — 2 giá trị λ_edge | λ=0.2: **0.6490** · λ=0.4: **0.6566** |
-| 3 | **+ Static Boundary** (Run 3 Bảng 1) | `L_total = L_region + α·(L_BCE_edge + L_Affinity)`, λ1=λ2=1 cố định | ✅ Code hoàn chỉnh 31/8/2026, đã verify `--dry-run` cục bộ (CPU, dataset giả lập, cả 1-rank và 2-rank DDP thật). **Chưa chạy full 40k trên Kaggle.** | chưa có (chờ chạy full) |
-| 3b | **+ Static Boundary, λ₂=0.5** (Run 3b — điểm giữa đường quét affinity) | `L_total = L_region + α·(λ1·L_BCE_edge + λ2·L_Affinity)`, λ1=1.0, λ2=0.5 (α_affinity hiệu dụng 0.4→0.2) | ✅ Code hoàn chỉnh 4/9/2026 (`docs/run3b_spec_lambda2_05.md`), đã verify `--dry-run` cục bộ (CPU, dataset giả lập, kể cả kiểm tra tương thích ngược với `static_boundary.yaml` gốc). **Chưa chạy full 40k trên Kaggle.** | chưa có (chờ chạy full) |
-| 4 | + Dynamic Boundary (Ours, λ1(t)/λ2(t)) | — | ❌ Chưa làm | — |
+| 3 | **+ Static Boundary** (Run 3 Bảng 1) | `L_total = L_region + α·(L_BCE_edge + L_Affinity)`, λ1=λ2=1 cố định | ✅ Đã chạy xong 40k iter trên Kaggle (6/9/2026) | **0.6540** (best @iter 36000) |
+| 3b | **+ Static Boundary, λ₂=0.5** (Run 3b — điểm giữa đường quét affinity) | `L_total = L_region + α·(λ1·L_BCE_edge + λ2·L_Affinity)`, λ1=1.0, λ2=0.5 (α_affinity hiệu dụng 0.4→0.2) | ✅ Đã chạy xong 40k iter trên Kaggle (6/9/2026, 03h26m39s) | **0.6458** (best @iter 36000) — bị Run 3 chi phối hoàn toàn (xem mục 6.5) |
+| 4 | **+ Dynamic Boundary** (Ours, λ1(t)/λ2(t), ramp→hold) | `L_total = L_region + α·(λ1(t)·L_BCE_edge + λ2(t)·L_Affinity)` | ✅ Code hoàn chỉnh 6/9/2026 (`docs/spec-run4-dynamic-weighting.md`), `--dry-run` cục bộ 7/7 tiêu chí gate PASS (kiểm thử độc lập bởi subagent tester). **Chưa chạy full 40k trên Kaggle.** | chưa có (chờ chạy full) |
 | — | Alpha-sweep (α ∈ {0.1, 0.5, 1.0, 2.0}) | — | ❌ Chưa làm (hạ tầng chưa xây) | — |
 | — | Phase 2 — 5-fold spatial CV (10 run) | — | ❌ Chưa làm | — |
 
 **Quyết định đã chốt:** Run 2 cho thấy λ_edge=0.4 tốt hơn λ_edge=0.2 (mIoU-9 0.6566 > 0.6490, cũng
 nhỉnh hơn cả baseline 0.6551; λ=0.2 ngược lại **thấp hơn** baseline) → **dùng λ_edge=0.4 làm giá trị
 α tạm thời cho Run 3** (và Run 4 sau này), kế thừa xuyên suốt cho tới khi có alpha-sweep chính thức
-trên cấu hình Run 4. Cả 3 thí nghiệm đã triển khai (#1, #2, #3) dùng **chung 1 kiến trúc UNetFormer
-(ResNet-18 + GLTB decoder)** và **chung mọi hyperparameter training** (seed, optimizer, lịch train)
-— chỉ khác nhau ở thành phần loss cộng thêm. Mục đích: cô lập tác động của boundary loss, so sánh
-công bằng (apples-to-apples).
+trên cấu hình Run 4. Run 3b (điểm giữa đường quét affinity, α_aff=0.2) cho kết quả **âm** — thua cả
+BCE λ=0.4 và Static (α_aff=0.4) trên mọi chỉ số đã đo (ASD, mIoU, BFScore) — bằng chứng trực tiếp dẫn
+tới thiết kế lịch trình `ramp_hold` của Run 4 (vượt nhanh qua vùng liều thấp thay vì ramp tuyến tính
+suốt run). Cả 4 thí nghiệm đã triển khai (#1-3b) dùng **chung 1 kiến trúc UNetFormer (ResNet-18 +
+GLTB decoder)** và **chung mọi hyperparameter training** (seed, optimizer, lịch train) — chỉ khác
+nhau ở thành phần loss cộng thêm. Mục đích: cô lập tác động của boundary loss, so sánh công bằng
+(apples-to-apples).
 
 ---
 
@@ -257,8 +260,21 @@ gọi `BoundaryMetrics` (`boundary_distances=(1,2,4)`) **ngay trong vòng lặp 
 | Không OOM | ✅ Giữ nguyên `AFFINITY_WINDOW_K=5` mặc định, không cần giảm |
 | Run 1/Run 2 không bị ảnh hưởng | ✅ `git status` xác nhận không file nào của Run 1/Run 2 bị sửa (ngoại trừ bổ sung thuần-additive vào `boundary_metrics.py`, đã backup) |
 
-**Việc còn lại:** chạy full 40.000 iteration thật trên Kaggle 2× T4
-(`bash scripts/run_static_boundary.sh`).
+### 5.7. Kết quả thật (Kaggle 2× T4, 40.000 iteration, đã chạy xong 6/9/2026)
+
+Đánh giá hậu kỳ trên `best_model.pth` (iter 36000) bằng `Tools/eval_boundary_metrics.py`, log raw tại
+`docs/results/run3_static_boundary_boundary_metrics.txt`:
+
+| Chỉ số | Giá trị |
+|---|---:|
+| mIoU (9 lớp) | **0.6540** |
+| Boundary IoU @1/@2/@4 | 0.0585 / 0.1170 / 0.2199 |
+| BF-Score (precision/recall) | 0.6144 (0.6241/0.6051) |
+| ASD | 4.6240 px (JSON hậu kỳ) / 4.6251 px (CSV lúc train) |
+
+2 dự đoán của giả thuyết cơ chế "BCE định vị biên, affinity dập biên giả" (`README.md` mục 10.7) đều
+khớp: lợi ích affinity tập trung ở chiều `pred→gt` (5.2158 so với `gt→pred` 4.0321), và precision
+tăng nhiều hơn recall so với baseline. Chi tiết đầy đủ: `README.md` mục 9.6/10.7.
 
 ---
 
@@ -325,27 +341,29 @@ Chi tiết đầy đủ: `README.md` mục 10.
 | `--dry-run`, trỏ vào `static_boundary.yaml` gốc của Run 3 (không có `LAMBDA1_STATIC`/`LAMBDA2_STATIC`) | ✅ Tự dùng default λ1=λ2=1.0, `alpha_affinity_effective=0.4` — xác nhận tương thích ngược |
 | Run 1/2/3 không bị ảnh hưởng | ✅ `git status` xác nhận không file nào của Run 1/2/3 bị sửa |
 
-**Việc còn lại:** chạy full 40.000 iteration thật trên Kaggle 2× T4
-(`bash scripts/run_static_boundary_weighted.sh`, ~3.5h dự kiến) + 2 lệnh eval hậu kỳ chính (ASD 2
-chiều + precision/recall + per-class BIoU cho BCE λ=0.4 và Static — README.md mục 10.7).
+### 6.5. Kết quả thật (Kaggle 2× T4, 40.000 iteration, đã chạy xong 6/9/2026, 03h26m39s)
 
-### 6.5. Quy tắc đọc kết quả (chốt trước khi có số)
+Log đầy đủ (4 checkpoint + mean±std 4 vòng cuối): `docs/results/run3b_lambda2_05_summary.txt`.
 
-**Cập nhật 4/9/2026 — ASD là chỉ số CHÍNH của run này** (không phải mIoU/BFScore/BIoU như bản trước):
-số liệu hậu kỳ trên 4 checkpoint đã có (Baseline/BCE λ=0.2/BCE λ=0.4/Static) cho thấy ASD là chỉ số
-**duy nhất** affinity tạo hiệu ứng ngoài nhiễu (2.5σ) và không đảo dấu khi so cùng iteration —
-BFScore/BIoU thì mù với hiệu ứng này (bão hoà ngoài ngưỡng d), mIoU chỉ đo cái giá phải trả. Giả
-thuyết cơ chế: **BCE định vị biên, affinity dập biên giả ở vùng trong** — 2 phép đo hậu kỳ kiểm định
-(ASD 2 chiều + precision/recall tách riêng cho BCE λ=0.4 và Static) và per-class BIoU: xem
-`README.md` mục 10.7.
+| Checkpoint | Iter | mIoU-9 | mIoU-8 | BFScore | BIoU@4 | ASD | Bareland |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| best_miou | 36000 | 0.6458 | 0.6056 | 0.6107 | 0.2223 | 5.0699 | 0.2931 |
+| best_bfscore = final | 40000 | 0.6442 | 0.6041 | 0.6143 | 0.2208 | 5.0431 | 0.2422 |
+| **mean±std 4 vòng cuối (round 7-10)** | — | **0.6400±0.0055** | **0.5995±0.0061** | **0.6090±0.0056** | **0.2171±0.0051** | **5.0886±0.0349** | **0.2537±0.0312** |
 
-Câu hỏi chính: **ở λ₂=0.5, giữ được bao nhiêu lợi ích ASD, trả lại bao nhiêu chi phí mIoU?** Mốc đối
-chiếu — BCE λ=0.4 (α_aff=0): `ASD=4.9128 · mIoU-9=0.6566 · BFScore=0.6123 · BIoU@4=0.2186 ·
-Bareland=0.3452`. Mốc đối chiếu — Static (α_aff=0.4, mean±std 3 vòng cuối):
-`ASD=4.713±0.081 · mIoU-9=0.6503±0.0062 · BFScore=0.6133±0.0028 · BIoU@4=0.2147±0.0058 ·
-Bareland=0.320±0.023`. Nội suy tuyến tính: ASD≈4.81, mIoU-9≈0.6535 — mốc "không có gì đặc biệt". Nếu
-ASD≤4.75 **và** mIoU-9≥0.6545 → vùng ngọt tồn tại, chốt `λ2*=0.5` cho Run 4 (`λ2_end=0.5`). Bảng
-quyết định đầy đủ (4 nhánh theo ngưỡng ASD): `README.md` mục 10.8.
+### 6.6. Quy tắc đọc kết quả — áp dụng vào số thật
+
+**Kết luận: Run 3b (α_aff=0.2) bị Run 3 static (α_aff=0.4) chi phối hoàn toàn.** Đối chiếu với 2 mốc
+đầu mút — mốc BCE λ=0.4: `ASD=4.9128 · mIoU-9=0.6566`; mốc Static (mean±std 3 vòng cuối):
+`ASD=4.713±0.081 · mIoU-9=0.6503±0.0062` — Run 3b (`ASD=5.0886±0.0349 · mIoU-9=0.6400±0.0055`) **tệ
+hơn cả hai** trên cả ASD lẫn mIoU-9, không nằm giữa 2 đầu mút như kỳ vọng của một đường quét đơn điệu.
+Rơi vào nhánh "phi đơn điệu" của bảng quyết định (`README.md` mục 10.8) — không phải thất bại, mà là
+**bằng chứng trực tiếp** rằng vùng liều affinity thấp (α_aff<0.4) có hại thật, không trung tính.
+
+**Hệ quả cho Run 4:** lịch trình `ramp_hold` (spec `docs/spec-run4-dynamic-weighting.md` mục 1) được
+thiết kế để **vượt nhanh qua vùng liều thấp** (chỉ 10% thời gian train ở λ2<0.5, so với ~50% của lịch
+trình tuyến tính ban đầu) thay vì dừng lại ở λ2=0.5 làm điểm vận hành cố định. Chi tiết đầy đủ + bảng
+quyết định 4 nhánh: `README.md` mục 10.8.
 
 ---
 
@@ -358,23 +376,28 @@ BoundaryLossSolution/
 │   │   └── baseline.yaml                  # Thí nghiệm 1
 │   ├── unet_former_resnet18_bce_edge/
 │   │   └── bce_edge.yaml                  # Thí nghiệm 2
-│   └── unet_former_resnet18_static_boundary/
-│       ├── static_boundary.yaml           # 🆕 Thí nghiệm 3
-│       └── run3b_static_lambda2_05.yaml   # 🆕 Thí nghiệm 3b (kế thừa static_boundary.yaml, cùng thư mục)
+│   ├── unet_former_resnet18_static_boundary/
+│   │   ├── static_boundary.yaml           # 🆕 Thí nghiệm 3
+│   │   └── run3b_static_lambda2_05.yaml   # 🆕 Thí nghiệm 3b (kế thừa static_boundary.yaml, cùng thư mục)
+│   └── unet_former_resnet18_dynamic_boundary/
+│       └── run4_dynamic_ramp_hold.yaml    # 🆕 Thí nghiệm 4 (kế thừa static_boundary.yaml)
 ├── src/
 │   ├── train_unet_former_resnet18.py      # Thí nghiệm 1 — script train
 │   ├── train_bce_edge.py                  # Thí nghiệm 2 — script train (độc lập)
 │   ├── train_static_boundary.py           # 🆕 Thí nghiệm 3 — script train (độc lập)
 │   ├── train_static_boundary_weighted.py  # 🆕 Thí nghiệm 3b — script train (độc lập với cả 3 trước)
-│   ├── models/unet_former_resnet18.py     # Kiến trúc — DÙNG CHUNG cả 4, không đổi
+│   ├── train_dynamic_boundary.py          # 🆕 Thí nghiệm 4 — script train (độc lập với cả 4 trước)
+│   ├── models/unet_former_resnet18.py     # Kiến trúc — DÙNG CHUNG cả 5, không đổi
 │   ├── losses/
-│   │   ├── boundary_bce.py                # Thí nghiệm 2+3+3b (BoundaryHead, L_BCE_edge, pos_weight)
-│   │   ├── affinity.py                    # 🆕 Thí nghiệm 3 (L_Affinity) — dùng chung bởi 3b
+│   │   ├── boundary_bce.py                # Thí nghiệm 2+3+3b+4 (BoundaryHead, L_BCE_edge, pos_weight)
+│   │   ├── affinity.py                    # 🆕 Thí nghiệm 3 (L_Affinity) — dùng chung bởi 3b+4
 │   │   ├── total_loss.py                  # 🆕 Thí nghiệm 3 (StaticBoundaryTotalLoss)
-│   │   └── total_loss_weighted.py         # 🆕 Thí nghiệm 3b (StaticBoundaryTotalLossWeighted)
+│   │   ├── total_loss_weighted.py         # 🆕 Thí nghiệm 3b (StaticBoundaryTotalLossWeighted)
+│   │   ├── dynamic_weighting.py           # 🆕 Thí nghiệm 4 (lambda_schedule_ramp_hold + SCHEDULES)
+│   │   └── total_loss_dynamic.py          # 🆕 Thí nghiệm 4 (DynamicBoundaryTotalLoss)
 │   ├── data/                              # DÙNG CHUNG (dataset/transforms), không đổi
 │   └── utils/                             # DÙNG CHUNG — losses.py/metrics.py/callbacks.py/visualizer.py
-│       └── boundary_metrics.py            # Boundary IoU/BF-Score/ASD — dùng bởi Run 3/3b trực tiếp,
+│       └── boundary_metrics.py            # Boundary IoU/BF-Score/ASD — dùng bởi Run 3/3b/4 trực tiếp,
 │                                            # bởi Run 2 qua Tools/eval_boundary_metrics.py (hậu kỳ)
 ├── Tools/
 │   ├── measure_edge_ratio.py              # Thí nghiệm 2 (đo r_edge/pos_weight, tuỳ chọn)
@@ -386,12 +409,17 @@ BoundaryLossSolution/
 │   ├── run_baseline.sh / resume_baseline.sh               # Thí nghiệm 1
 │   ├── run_bce_edge.sh / resume_bce_edge.sh               # Thí nghiệm 2
 │   ├── run_static_boundary.sh / resume_static_boundary.sh # 🆕 Thí nghiệm 3
-│   └── run_static_boundary_weighted.sh /
-│       resume_static_boundary_weighted.sh                 # 🆕 Thí nghiệm 3b
+│   ├── run_static_boundary_weighted.sh /
+│   │   resume_static_boundary_weighted.sh                 # 🆕 Thí nghiệm 3b
+│   └── run_dynamic_boundary.sh / resume_dynamic_boundary.sh # 🆕 Thí nghiệm 4
 └── docs/
     ├── idea_research.md                   # Đề cương gốc (công thức, 18-run protocol)
     ├── workflow_2.md                      # Đặc tả kỹ thuật + checklist các bước CHƯA làm
     ├── run3b_spec_lambda2_05.md           # Đặc tả bàn giao Run 3b
+    ├── spec-run4-dynamic-weighting.md     # 🆕 Đặc tả bàn giao Run 4
+    ├── results/
+    │   ├── run3_static_boundary_boundary_metrics.txt  # 🆕 Kết quả eval hậu kỳ Run 3
+    │   └── run3b_lambda2_05_summary.txt                # 🆕 summary.txt đầy đủ Run 3b
     └── tong_quan_thuc_nghiem.md           # File này
 ```
 
@@ -399,14 +427,20 @@ BoundaryLossSolution/
 
 ## 8. Việc tiếp theo (theo `docs/idea_research.md` Bảng 1 / `docs/workflow_2.md`)
 
-1. Chạy full `bash scripts/run_static_boundary_weighted.sh` trên Kaggle — có kết quả ASD/mIoU/
-   boundary metrics thật cho Run 3b (điểm giữa đường quét affinity, `α_affinity=0.2`), đối chiếu 3
-   điểm `{0, 0.2, 0.4}` trên **ASD làm chỉ số chính** để chốt `λ2*` (mục 6.5, `README.md` mục 10.8).
-2. 2 lệnh eval hậu kỳ CPU song song cho BCE λ=0.4 và Static (ASD 2 chiều + precision/recall +
-   per-class BIoU — `README.md` mục 10.7) — không tốn GPU, chạy độc lập với việc 1.
-3. `dynamic_weighting.py` (λ1(t), λ2(t)) → Run 4 (Dynamic Boundary, Ours) — dùng `λ2*` chốt được từ
-   Run 3b làm `λ2_end`.
+**Đã xong (6/9/2026):** Run 3 và Run 3b đã chạy full trên Kaggle, kết quả thật đã điền vào mục 5.7/
+6.5-6.6 và `README.md` mục 9.6/10.7-10.9. Run 3b bị Run 3 chi phối hoàn toàn (phi đơn điệu) — bằng
+chứng trực tiếp cho thiết kế lịch trình `ramp_hold` của Run 4, đã viết code xong (mục 1, dòng #4).
+
+1. **Chạy full `torchrun --nproc_per_node=2 src/train_dynamic_boundary.py --config configs/unet_former_resnet18_dynamic_boundary/run4_dynamic_ramp_hold.yaml`
+   trên Kaggle 2× T4** (~3.5h, kiểm GPU không phải P100 trước khi submit) — việc tiếp theo DUY NHẤT
+   đang chặn đường. Quy tắc đọc kết quả: `docs/spec-run4-dynamic-weighting.md` mục 7.
+2. (Tuỳ chọn, 0 GPU, chạy song song với việc 1) Kiểm tra câu hỏi per-class còn treo ở `README.md`
+   mục 10.7 — Water có BIoU tăng trong khi IoU vùng giảm không (đọc trực tiếp
+   `run3_static_boundary_boundary_metrics.json` gốc trên Kaggle, log console hiện có không in per-class).
+3. Tuỳ kết quả Run 4 (bảng quyết định 4 nhánh, `README.md` mục 10.8/spec Run 4 mục 7.2): có thể cần
+   chạy thêm Run 4b (biến thể decay cuối) hoặc Run 4b' (bỏ ramp, bậc thang) — xem spec Run 4 mục 7.2.
 4. Alpha-sweep (α ∈ {0.1, 0.5, 1.0, 2.0}) chạy trên cấu hình Run 4 để chọn α* chính thức — hiện
-   Run 3/3b mới dùng α=0.4 kế thừa tạm thời từ Run 2.
-5. Phase 2 — 5-fold spatial CV (10 run: 5 baseline + 5 proposed).
+   Run 3/3b/4 mới dùng α=0.4 kế thừa tạm thời từ Run 2.
+5. Phase 2 — 5-fold spatial CV (10 run: 5 baseline + 5 proposed) — chỉ chạy sau khi Run 4 (+ 4b/4b'
+   nếu cần) đã chốt cấu hình đề xuất cuối cùng.
 6. `Tools/aggregate_results.py` — gộp kết quả thành Bảng 1/Bảng 2 cho bài báo.

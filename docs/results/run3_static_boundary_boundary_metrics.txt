@@ -1,0 +1,15 @@
+Resolved TRAIN_MASK_DIR: 'labels/train' -> 'label/train' (detected 'label/' under /kaggle/input/datasets/aletbm/global-land-cover-mapping-openearthmap)
+Resolved VAL_MASK_DIR: 'labels/val' -> 'label/val' (detected 'label/' under /kaggle/input/datasets/aletbm/global-land-cover-mapping-openearthmap)
+Device: cpu (P100 khong tuong thich voi build PyTorch hien tai, tu dong chuyen sang CPU cho eval hau ky nay)
+Val set: 384 anh (/kaggle/input/datasets/aletbm/global-land-cover-mapping-openearthmap/images/val)
+Da nap checkpoint: /kaggle/input/datasets/huanluong/static-boundary-lambda-1/best_model.pth
+
+=== Ket qua (384 anh, 1466.7s, 3.820s/anh) ===
+mIoU (9 lop):        0.6540
+Boundary IoU d=1:    0.0585
+Boundary IoU d=2:    0.1170
+Boundary IoU d=4:    0.2199
+BF-Score:            0.6144 (precision=0.6241, recall=0.6051)
+ASD:                  4.6240 pixel
+
+Da luu: run3_static_boundary_boundary_metrics.json

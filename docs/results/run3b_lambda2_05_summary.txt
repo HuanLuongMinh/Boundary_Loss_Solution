@@ -1,0 +1,137 @@
+================================================================
+ EDGE + AFFINITY SUPERVISION STATISTICS
+================================================================
+
+Experiment name            : run3b_lambda2_05
+Dataset                    : OpenEarthMap (OEM)
+Task                       : 8-class land-cover semantic segmentation (+ Background, 9 lop trong pipeline nay)
+Model                      : UNetFormer
+Backbone                   : ResNet-18
+Region loss                : CombinedLoss (CrossEntropy + Dice)
+Edge loss                  : BCEWithLogitsLoss (class-balanced, pos_weight)
+Affinity loss              : contrastive feature-distance gan bien (window=5, distance=cosine, margin=1.0)
+Total loss                 : L_total = L_region + alpha*(lambda1*L_BCE_edge + lambda2*L_Affinity)
+alpha                      : 0.4000
+lambda1 (static)           : 1.0000
+lambda2 (static)           : 0.5000
+alpha_bce  (effective)     : 0.4000      <-- alpha * lambda1
+alpha_affinity (effective) : 0.2000      <-- alpha * lambda2
+
+================================================================
+ EVALUATION -- 4 CHECKPOINTS
+================================================================
+
+Checkpoint        Iter    mIoU-9    mIoU-8   BFScore    BIoU@2    BIoU@4       ASD  Bareland
+best_miou        36000    0.6458    0.6056    0.6107    0.1200    0.2223    5.0699    0.2931
+best_bfscore     40000    0.6442    0.6041    0.6143    0.1181    0.2208    5.0431    0.2422
+best_bareland    12000    0.5970    0.5524    0.5693    0.0974    0.1839    5.5963    0.3034
+final            40000    0.6442    0.6041    0.6143    0.1181    0.2208    5.0431    0.2422
+
+================================================================
+ MEAN +/- STD -- 4 VONG CUOI (round 7-10)
+================================================================
+
+mIoU-9      : 0.6400 +/- 0.0055
+mIoU-8      : 0.5995 +/- 0.0061
+BFScore     : 0.6090 +/- 0.0056
+BIoU@2      : 0.1161 +/- 0.0032
+BIoU@4      : 0.2171 +/- 0.0051
+ASD         : 5.0886 +/- 0.0349
+Bareland    : 0.2537 +/- 0.0312
+
+Per-class IoU (9 lop, mean +/- std):
+  Background  : 0.9633 +/- 0.0044
+  Bareland    : 0.2537 +/- 0.0312
+  Rangeland   : 0.5339 +/- 0.0054
+  Developed   : 0.5296 +/- 0.0040
+  Road        : 0.6112 +/- 0.0039
+  Tree        : 0.6764 +/- 0.0062
+  Water       : 0.6990 +/- 0.0073
+  Agriculture : 0.7317 +/- 0.0043
+  Building    : 0.7607 +/- 0.0045
+
+Boundary metrics coverage   : day du moi vong validate (khong rut gon) - giu nguyen cach lam da kiem chung o Run 3 (kien truc/val-set/tham so boundary giong het, hoan thanh 40k iteration trong 03h22m).
+
+Final validation L_region   : 1.0638
+Final validation L_bce      : 0.8471
+Final validation L_affinity : 0.3843
+Final validation L_total    : 1.4795
+Total training time         : 03h 26m 39s
+----------------------------------------------------------------
+ LABEL AND VALID-PIXEL POLICY
+----------------------------------------------------------------
+
+Number of OEM classes       : 9 (Background + 8 land-cover)
+Class IDs used for mIoU-9   : 0-8 (toan bo)
+Class IDs used for mIoU-8   : 1-8 (loai Background)
+Background handling         : supervised class (existing baseline convention) -- KHONG map sang ignore_index
+Ignore index                : 255  (hien la no-op -- dataset khong sinh pixel gia tri nay)
+Ignore pixels in edge loss  : excluded (qua valid_mask trong extract_edge_gt)
+Ignore pixels in affinity   : excluded (ca pixel trung tam va hang xom, qua valid_mask)
+Ignore pixels in mIoU       : excluded (qua ignore_index trong SegmentationMetrics)
+mIoU reporting convention   : ghi ca mIoU-9 (dung chon best checkpoint) va mIoU-8 (chi bao cao)
+----------------------------------------------------------------
+ EDGE-TARGET DEFINITION (dung chung cho L_BCE_edge, L_Affinity, BoundaryMetrics)
+----------------------------------------------------------------
+
+Edge source                 : semantic ground-truth mask (post-transform), downsample NEAREST ve stride-4 cho L_Affinity
+Neighborhood connectivity   : 4-connected
+Edge criterion              : center valid pixel co it nhat 1 hang-xom valid mang nhan khac
+Edge dilation radius        : 0 pixels
+Final edge-target width     : 1 pixel(s)
+Edge target values          : binary {0, 1}
+Crop size used for stats    : 512 x 512
+Statistics sampling         : bounded auto-estimate (100 batch/rank x 2 rank, APPROXIMATE -- khong phai full epoch)
+Random seed for statistics  : 19
+----------------------------------------------------------------
+ DATASET-LEVEL EDGE STATISTICS
+----------------------------------------------------------------
+
+Number of analyzed crops    : 800
+Number of valid pixels      : 209715200
+Number of edge pixels       : 17494848
+Number of non-edge pixels   : 192220352
+Edge pixel ratio            : 0.083422
+Non-edge pixel ratio        : 0.916578
+
+Formula:
+  r_edge = N_edge / max(N_valid, 1)
+  N_nonedge = N_valid - N_edge
+----------------------------------------------------------------
+ BCE IMBALANCE CORRECTION (chi ap dung cho L_BCE_edge, khong ap dung cho L_Affinity)
+----------------------------------------------------------------
+
+pos_weight formula          : N_nonedge / max(N_edge, 1)
+pos_weight raw              : 10.9873
+pos_weight clipping         : enabled
+pos_weight clip range       : [1.0, 20.0]
+pos_weight used             : 10.9873
+BCE reduction               : none -> valid-mask multiplication -> sum / valid_mask.sum()
+Logit handling              : raw edge logits; no manual sigmoid
+NaN / Inf check             : passed
+----------------------------------------------------------------
+ AFFINITY LOSS CONFIGURATION
+----------------------------------------------------------------
+
+Feature source              : Fused Feature (decoder, C=64, stride 4, truoc upsample)
+Neighborhood window (KxK)   : 5 x 5
+Distance metric             : cosine
+Margin                      : 1.0
+Sampling region              : chi cac pixel trung tam trong vung gan bien (extract_edge_gt)
+lambda1 (L_BCE_edge weight) : 1.0000 (static)
+lambda2 (L_Affinity weight) : 0.5000 (static, BIEN DUY NHAT thay doi so voi Run 3)
+----------------------------------------------------------------
+ PRE-FLIGHT VALIDATION
+----------------------------------------------------------------
+
+Edge target binary check    : passed
+Ignore-pixel mask check     : passed
+Edge overlay visual check   : passed
+Edge-head gradient check    : passed
+Affinity gradient check     : passed
+Loss-formula identity check : passed
+Lambda2 effective check     : passed
+Initial L_region finite     : passed
+Initial L_bce finite        : passed
+Initial L_affinity finite   : passed
+Initial L_total finite      : passed
