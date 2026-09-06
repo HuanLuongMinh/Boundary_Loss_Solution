@@ -1,0 +1,83 @@
+DATASET:
+  # Y HET static_boundary.yaml (Run 3) — khong split/subset, dung thang toan
+  # bo images/train + images/val co san. ROOT_DIR duoc resolve dong luc chay
+  # (resolve_dataset_paths() trong src/train_dynamic_boundary.py).
+  ROOT_DIR: "/kaggle/input/datasets/aletbm/global-land-cover-mapping-openearthmap"
+  TRAIN_IMG_DIR: "images/train"
+  TRAIN_MASK_DIR: "labels/train"
+  VAL_ROOT_DIR: "/kaggle/input/datasets/aletbm/global-land-cover-mapping-openearthmap"
+  VAL_IMG_DIR: "images/val"
+  VAL_MASK_DIR: "labels/val"
+
+MODEL:
+  # Kien truc UNetFormer y het baseline/Run 2/Run 3/Run 3b — khong doi.
+  ARCH: "UnetFormer"
+  ENCODER: "resnet18.fb_swsl_ig1b_ft_in1k"
+  PRETRAINED: true
+  DECODE_CHANNELS: 64
+  WINDOW_SIZE: 8
+  NUM_HEADS: 8
+  MLP_RATIO: 4.0
+  DROP_PATH_RATE: 0.1
+  DROPOUT_RATIO: 0.1
+
+LOSS:
+  # L_region — y het baseline/Run 2/Run 3/Run 3b, tai su dung nguyen
+  # CombinedLoss (CE+Dice), KHONG doi.
+  TYPE: "CombinedLoss"
+  CE_WEIGHT: 1.0
+  DICE_WEIGHT: 1.0
+
+# Run 4 (docs/spec-run4-dynamic-weighting.md) — "Dynamic Boundary-Aware Loss".
+# DUNG MOT bien thay doi so voi Run 3 (static_boundary.yaml): DYNAMIC_WEIGHTS
+# false -> true, cong them cac tham so cua schedule 'ramp_hold'. Moi gia tri
+# khac (ALPHA, WINDOW_K, DISTANCE, MARGIN, CONNECTIVITY, DILATION_RADIUS,
+# POS_WEIGHT_MAX) GIU NGUYEN y het Run 3.
+#
+# L_total = L_region + ALPHA * (lambda1(t)*L_BCE_edge + lambda2(t)*L_Affinity)
+#   lambda1(t) = LAMBDA1_CONST = 1.0 (phang, khong doi suot run)
+#   lambda2(t):
+#     iter     0 -  4000 (p <  0.10)            : 0.0            (warmup, chi BCE)
+#     iter  4000 - 12000 (0.10 <= p < 0.30)      : 0 -> LAMBDA2_END (ramp tuyen tinh)
+#     iter 12000 - 40000 (p >= 0.30)             : LAMBDA2_END = 1.0 (hold)
+#   => alpha_affinity hieu dung: 0.0 -> 0.4 (dat 0.4 tu iter 12000, dung lieu
+#      da xac nhan tot nhat o Run 3b: alpha_aff=0.4 thang alpha_aff=0.2)
+BOUNDARY_LOSS:
+  USE_BCE: true
+  USE_AFFINITY: true
+  DYNAMIC_WEIGHTS: true          # <-- BIEN DUY NHAT DOI so voi Run 3
+  SCHEDULE: ramp_hold            # <-- MOI - chon lambda_schedule_ramp_hold trong SCHEDULES
+  ALPHA: 0.4                     # GIU NGUYEN
+  LAMBDA1_CONST: 1.0             # <-- MOI (lambda1 phang)
+  LAMBDA2_END: 1.0               # <-- MOI (=> alpha_affinity hieu dung dat toi da 0.4)
+  WARMUP_FRAC: 0.10              # <-- MOI
+  RAMP_END_FRAC: 0.30            # <-- MOI
+  CONNECTIVITY: 4                # GIU NGUYEN
+  DILATION_RADIUS: 0             # GIU NGUYEN
+  IGNORE_INDEX: 255              # GIU NGUYEN
+  POS_WEIGHT_MAX: 20.0           # GIU NGUYEN
+  EDGE_STATS_FILE: ""            # de trong -> tu uoc luong pos_weight luc khoi dong, giong Run 3/3b
+  EDGE_STATS_NUM_BATCHES: 100    # GIU NGUYEN
+  AFFINITY_WINDOW_K: 5           # GIU NGUYEN
+  AFFINITY_DISTANCE: cosine      # GIU NGUYEN
+  AFFINITY_MARGIN: 1.0           # GIU NGUYEN
+
+TRAIN:
+  SEED: 19                      # GIU NGUYEN TUYET DOI - y het baseline/bce_edge/static_boundary/3b
+  NUM_CLASSES: 9
+  MAX_ITERS: 40000              # GIU NGUYEN
+  VAL_INTERVAL: 4000
+  EARLY_STOPPING_PATIENCE: 4
+  BATCH_SIZE_PER_GPU: 4
+  NUM_WORKERS: 2
+  WARMUP_ITERS: 500             # warmup CUA POLY LR SCHEDULER - khong lien quan warmup_frac cua lambda2
+
+OPTIMIZER:
+  BASE_LR: 0.0006
+  WEIGHT_DECAY: 0.01
+  GRAD_CLIP: 5.0
+
+OUTPUT:
+  # Work dir RIENG, khong dung work_dirs cua bat ky run nao khac - thuc
+  # nghiem nay chay doc lap, khong ghi de/anh huong gi toi output cac run truoc.
+  WORK_DIR: "/kaggle/working/unetformer-resnet18-dynamic-boundary-openearthmap/work_dirs/run4_dynamic_ramp_hold"
