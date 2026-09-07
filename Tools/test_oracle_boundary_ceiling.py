@@ -27,7 +27,8 @@ from src.utils.metrics import SegmentationMetrics
 from Tools.oracle_boundary_ceiling import (
     apply_oracle_boundary, apply_oracle_interior, band_pixel_counts,
     labels_to_pseudo_logits, accumulate_variant,
-    gate_5_1_check, gate_5_2_check, gate_5_3_check,
+    gate_5_1_check, gate_5_1_relation_check, gate_5_1_per_class_check,
+    gate_5_2_check, gate_5_3_check,
     validate_run_specs, parse_int_list,
     compute_checkpoint_oracle, write_checkpoint_outputs, write_comparison_md,
 )
@@ -122,14 +123,50 @@ def test_gate_5_2_real_curve_is_monotonic():
 
 
 def test_gate_5_1():
-    gate_5_1_check(0.6551, None, 1e-3)  # None -> bo qua, khong raise
-    gate_5_1_check(0.6551, 0.6551, 1e-3)  # khop -> khong raise
+    gate_5_1_check(0.6551, 0.6183, None, 1e-3)  # None -> bo qua, khong raise
+    gate_5_1_check(0.6551, 0.6183, 0.6551, 1e-3)  # khop mIoU-9 -> khong raise
     try:
-        gate_5_1_check(0.60, 0.6551, 1e-3)
+        gate_5_1_check(0.6566, 0.6183, 0.6183, 1e-3)  # cai bay bce_lambda04: EXPECTED bi lay nham mIoU-8
         raise AssertionError("gate_5_1_check phai raise khi lech vuot nguong")
+    except RuntimeError as e:
+        msg = str(e)
+        assert 'mIoU-9' in msg and 'mIoU-8' in msg, (
+            "thong bao loi cong 5.1 phai in ca computed mIoU-9 lan mIoU-8 co nhan (muc 3.1 spec) "
+            "de lo ngay neu EXPECTED bi lay nham quy uoc")
+    print("PASS: cong 5.1 (khop none voi expected-miou) dung ca 3 nhanh, "
+          "thong bao loi in ca mIoU-9 va mIoU-8")
+
+
+def test_gate_5_1_relation_check():
+    per_class = {'Background': 0.9609492}
+    miou8 = 0.6168605
+    miou9_ok = (8 * miou8 + per_class['Background']) / 9
+    gate_5_1_relation_check(miou9_ok, miou8, per_class)  # khong raise
+
+    try:
+        gate_5_1_relation_check(0.6183, miou8, per_class)  # co tinh sai lech
+        raise AssertionError("gate_5_1_relation_check phai raise khi quan he macro khong thoa")
     except RuntimeError:
         pass
-    print("PASS: cong 5.1 (khop none voi expected-miou) dung ca 3 nhanh")
+    print("PASS: cong quan he mIoU-9/mIoU-8 (muc 3.3 spec) dung ca nhanh pass va nhanh fail")
+
+
+def test_gate_5_1_per_class_check():
+    computed = {'Background': 0.9609492, 'Bareland': 0.3646590, 'Water': 0.7278831}
+
+    gate_5_1_per_class_check('t', computed, None, 1e-3)  # None -> bo qua, khong raise
+    gate_5_1_per_class_check('t', computed, dict(computed), 1e-3)  # khop het -> khong raise
+
+    expected_bad = {'Background': 0.9609492, 'Bareland': 0.60, 'Water': 0.50}  # 2 lop lech
+    try:
+        gate_5_1_per_class_check('t', computed, expected_bad, 1e-3)
+        raise AssertionError("gate_5_1_per_class_check phai raise khi co lop lech qua nguong")
+    except RuntimeError as e:
+        msg = str(e)
+        assert 'Bareland' in msg and 'Water' in msg, (
+            "thong bao loi phai liet ke TAT CA lop lech (Bareland VA Water), khong dung o lop dau")
+    print("PASS: cong per-class (muc 3.2 spec) dung ca 3 nhanh, bao cao tat ca lop lech chu khong "
+          "dung o lop dau")
 
 
 def test_band_pixel_counts_hand_computed():
@@ -158,23 +195,24 @@ def test_validate_run_specs_counts_from_cli():
     args_ok = SimpleNamespace(
         checkpoint=['a.pth', 'b.pth'], config=['a.yaml', 'b.yaml'],
         model_type=['baseline', 'bce_edge'], label=['baseline', 'bce'],
-        iter=[40000, 40000], expected_miou=[],
+        iter=[40000, 40000], expected_miou=[], expected_per_class=[],
     )
     specs = validate_run_specs(args_ok)
     assert len(specs) == 2, "N phai duoc dem tu so lan --checkpoint, khong hard-code"
     assert specs[0]['label'] == 'baseline' and specs[1]['model_type'] == 'bce_edge'
+    assert specs[0]['expected_per_class'] is None, "khong truyen --expected-per-class -> None cho tat ca"
 
     args_5 = SimpleNamespace(
         checkpoint=[f'{i}.pth' for i in range(5)], config=[f'{i}.yaml' for i in range(5)],
         model_type=['baseline'] * 5, label=[f'l{i}' for i in range(5)],
-        iter=[1000 * i for i in range(5)], expected_miou=[],
+        iter=[1000 * i for i in range(5)], expected_miou=[], expected_per_class=[],
     )
     assert len(validate_run_specs(args_5)) == 5, "phai chay dung duoc 5 checkpoint, khong chi 3/4"
 
     args_mismatch = SimpleNamespace(
         checkpoint=['a.pth', 'b.pth'], config=['a.yaml'],  # thieu 1
         model_type=['baseline', 'bce_edge'], label=['baseline', 'bce'],
-        iter=[40000, 40000], expected_miou=[],
+        iter=[40000, 40000], expected_miou=[], expected_per_class=[],
     )
     try:
         validate_run_specs(args_mismatch)
@@ -185,7 +223,7 @@ def test_validate_run_specs_counts_from_cli():
     args_dup_label = SimpleNamespace(
         checkpoint=['a.pth', 'b.pth'], config=['a.yaml', 'b.yaml'],
         model_type=['baseline', 'bce_edge'], label=['same', 'same'],
-        iter=[40000, 40000], expected_miou=[],
+        iter=[40000, 40000], expected_miou=[], expected_per_class=[],
     )
     try:
         validate_run_specs(args_dup_label)
@@ -196,13 +234,25 @@ def test_validate_run_specs_counts_from_cli():
     args_skip = SimpleNamespace(
         checkpoint=['a.pth', 'b.pth'], config=['a.yaml', 'b.yaml'],
         model_type=['baseline', 'bce_edge'], label=['baseline', 'bce'],
-        iter=[40000, 40000], expected_miou=['0.6551', 'skip'],
+        iter=[40000, 40000], expected_miou=['0.6551', 'skip'], expected_per_class=[],
     )
     specs_skip = validate_run_specs(args_skip)
     assert specs_skip[0]['expected_miou'] == 0.6551 and specs_skip[1]['expected_miou'] is None
 
+    args_per_class = SimpleNamespace(
+        checkpoint=['a.pth', 'b.pth'], config=['a.yaml', 'b.yaml'],
+        model_type=['baseline', 'bce_edge'], label=['baseline', 'bce'],
+        iter=[40000, 40000], expected_miou=[],
+        expected_per_class=['{"Background": 0.9609492, "Water": 0.7278831}', 'skip'],
+    )
+    specs_pc = validate_run_specs(args_per_class)
+    assert specs_pc[0]['expected_per_class'] == {'Background': 0.9609492, 'Water': 0.7278831}, (
+        "--expected-per-class phai parse duoc JSON inline")
+    assert specs_pc[1]['expected_per_class'] is None, "'skip' phai bo qua rieng 1 checkpoint"
+
     print("PASS: validate_run_specs dem dung N (2 va 5), bat loi lech do dai/label trung, "
-          "va parse 'skip' tung checkpoint rieng le")
+          "va parse 'skip'/JSON inline tung checkpoint rieng le (ca --expected-miou va "
+          "--expected-per-class)")
 
 
 def test_parse_int_list():
@@ -285,6 +335,8 @@ if __name__ == '__main__':
         test_gate_5_2_monotonic,
         test_gate_5_2_real_curve_is_monotonic,
         test_gate_5_1,
+        test_gate_5_1_relation_check,
+        test_gate_5_1_per_class_check,
         test_band_pixel_counts_hand_computed,
         test_labels_to_pseudo_logits_roundtrip,
         test_validate_run_specs_counts_from_cli,

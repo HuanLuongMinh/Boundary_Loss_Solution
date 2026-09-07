@@ -63,7 +63,7 @@ docs/spec-oracle-d-tran-cai-thien-bien.md muc 1.1 (N tu suy ra tu so lan
             --model-type baseline --label baseline --iter 40000 --expected-miou 0.6551 ^
         --checkpoint work_dirs/phase1/run2b_bce_lambda04/best_model.pth ^
             --config configs/unet_former_resnet18_bce_edge/bce_edge.yaml ^
-            --model-type bce_edge --label bce_lambda04 --iter 40000 --expected-miou 0.6183 ^
+            --model-type bce_edge --label bce_lambda04 --iter 40000 --expected-miou 0.6566 ^
         --checkpoint work_dirs/phase1/run3_static_alpha04/best_model.pth ^
             --config configs/unet_former_resnet18_static_boundary/static_boundary.yaml ^
             --model-type static_boundary --label static_alpha04 --iter 36000 --expected-miou 0.6540 ^
@@ -75,6 +75,12 @@ Muon chay 1, 2 hay 5 checkpoint thi lap/bot dung bay nhieu bo 5 co
 dung THU TU tuong ung 1 checkpoint — script tu dem N tu so lan --checkpoint.
 --expected-miou co the bo han (bo qua cong 5.1 moi checkpoint) hoac truyen
 "skip" cho tung checkpoint rieng le trong khi van kiem cho cac checkpoint khac.
+
+--expected-per-class (tuy chon, cung quy uoc "skip"/bo han nhu tren) kiem
+tung lop rieng theo TEN LOP thay vi chi so scalar mIoU-9 — truyen JSON inline,
+vi du:
+    --expected-per-class '{"Background":0.9609492,"Bareland":0.3646590}'
+hoac duong dan toi 1 file .json chua dict cung dang.
 """
 
 
@@ -98,6 +104,11 @@ def parse_args():
     ap.add_argument('--expected-miou', dest='expected_miou', action='append', default=[],
                      help='mIoU-9 da biet truoc cua checkpoint (dung cho cong 5.1). '
                           'Truyen "skip" de bo qua rieng 1 checkpoint. Bo han co nay = bo qua cong 5.1 cho tat ca.')
+    ap.add_argument('--expected-per-class', dest='expected_per_class', action='append', default=[],
+                     help='IoU tung lop da biet truoc cua checkpoint (dung cho cong per-class, muc 3.2 '
+                          'spec sua cong). JSON inline (vd \'{"Background":0.9609,...}\') HOAC duong dan '
+                          'file .json chua dict do. Truyen "skip" de bo qua rieng 1 checkpoint. Bo han '
+                          'co nay = bo qua cong per-class cho tat ca.')
     ap.add_argument('--data-root', default=None, help='Override DATASET.ROOT_DIR/VAL_ROOT_DIR cho moi checkpoint.')
     ap.add_argument('--batch-size', type=int, default=4)
     ap.add_argument('--num-workers', type=int, default=2)
@@ -114,6 +125,17 @@ def parse_args():
 
 def parse_int_list(s):
     return [int(x) for x in s.split(',') if x.strip() != '']
+
+
+def _parse_expected_per_class(raw):
+    """Muc 3.2 spec sua cong — '--expected-per-class' co the la JSON inline hoac
+    duong dan file .json; "skip" -> None (bo qua rieng checkpoint nay)."""
+    if str(raw).strip().lower() == 'skip':
+        return None
+    if os.path.isfile(raw):
+        with open(raw, encoding='utf-8') as f:
+            return json.load(f)
+    return json.loads(raw)
 
 
 def validate_run_specs(args):
@@ -140,6 +162,12 @@ def validate_run_specs(args):
             f"phai truyen dung 0 lan (bo qua cong 5.1 cho tat ca) hoac dung {n} lan "
             f"(dung 'skip' cho checkpoint muon bo qua rieng le).")
 
+    if args.expected_per_class and len(args.expected_per_class) != n:
+        raise ValueError(
+            f"--expected-per-class duoc truyen {len(args.expected_per_class)} lan nhung co {n} "
+            f"checkpoint — phai truyen dung 0 lan (bo qua cong per-class cho tat ca) hoac dung {n} "
+            f"lan (dung 'skip' cho checkpoint muon bo qua rieng le).")
+
     if len(set(args.label)) != n:
         raise ValueError(f"--label co gia tri trung lap: {args.label} — moi checkpoint can 1 label duy nhat.")
 
@@ -149,10 +177,14 @@ def validate_run_specs(args):
         if args.expected_miou:
             raw = args.expected_miou[i]
             expected = None if str(raw).strip().lower() == 'skip' else float(raw)
+        expected_per_class = None
+        if args.expected_per_class:
+            expected_per_class = _parse_expected_per_class(args.expected_per_class[i])
         specs.append({
             'checkpoint': args.checkpoint[i], 'config': args.config[i],
             'model_type': args.model_type[i], 'label': args.label[i],
             'iter': args.iter[i], 'expected_miou': expected,
+            'expected_per_class': expected_per_class,
         })
     return specs
 
@@ -197,16 +229,73 @@ def accumulate_variant(seg_metrics: SegmentationMetrics, y_pred_array: np.ndarra
 
 # ─────────────────────────── Gate checks (muc 5) ────────────────────────────
 
-def gate_5_1_check(none_miou9: float, expected, tol: float):
-    """None -> khong kiem (chua truyen --expected-miou). Raise RuntimeError neu FAIL."""
+def gate_5_1_check(computed_miou9: float, computed_miou8: float, expected, tol: float):
+    """None -> khong kiem (chua truyen --expected-miou). Raise RuntimeError neu FAIL.
+
+    In ca computed_miou9 LAN computed_miou8 co nhan ro rang (muc 3.1 spec sua
+    cong) — day la bai hoc tu vu bce_lambda04: EXPECTED bi lay nham thanh
+    mIoU-8 (0.6183) thay vi mIoU-9 (0.6566); neu thong bao loi truoc day da in
+    ca hai, thu pham lo ngay khong can dieu tra them."""
     if expected is None:
         return None
-    diff = abs(none_miou9 - expected)
+    diff = abs(computed_miou9 - expected)
     if diff >= tol:
         raise RuntimeError(
-            f"CONG 5.1 FAIL: none.mIoU-9={none_miou9:.4f} lech {diff:.4f} so voi "
-            f"expected={expected:.4f} (nguong {tol}). DUNG — moi so oracle vo gia tri.")
+            f"CONG 5.1 FAIL\n"
+            f"  computed mIoU-9   = {computed_miou9:.7f}\n"
+            f"  computed mIoU-8   = {computed_miou8:.7f}   <- neu EXPECTED trung so nay, "
+            f"ban dang so nham QUY UOC (xem doi-chieu muc 3.0)\n"
+            f"  EXPECTED_MIOU9    = {expected:.7f}\n"
+            f"  lech              = {diff:.7f} (nguong {tol}). DUNG — moi so oracle vo gia tri.")
     return diff
+
+
+def gate_5_1_relation_check(miou9: float, miou8: float, per_class_iou: dict, tol: float = 1e-9):
+    """Muc 3.3 spec sua cong — tu kiem quan he macro mIoU-9 = (8*mIoU-8 +
+    IoU_Background)/9. Luon chay, KHONG can hang so ky vong ben ngoai: bat
+    duoc ngay loi tinh nham quy uoc macro (8 lop vs 9 lop) truoc khi no lan
+    sang cong 5.1 scalar."""
+    predicted = (8 * miou8 + per_class_iou['Background']) / 9
+    diff = abs(miou9 - predicted)
+    if diff >= tol:
+        raise RuntimeError(
+            "Quan he mIoU-9/mIoU-8 khong thoa — kiem lai cach tinh macro.\n"
+            f"  mIoU-9 bao cao           = {miou9:.9f}\n"
+            f"  (8*mIoU-8+Background)/9  = {predicted:.9f}\n"
+            f"  lech                     = {diff:.9f} (nguong {tol})")
+    return True
+
+
+def gate_5_1_per_class_check(label: str, per_class_iou: dict, expected_per_class, tol: float):
+    """Muc 3.2 spec sua cong — cong vector per-class theo TEN LOP (khong phai
+    chi so), vi cong scalar khong bat duoc loi hoan doi lop (bai hoc Water/
+    Agriculture o phase1-run2). None -> khong kiem (chua truyen
+    --expected-per-class). Bao cao TAT CA lop lech, khong dung o lop dau."""
+    if expected_per_class is None:
+        print(f"[{label}] Cong per-class CHUA XAC NHAN (khong truyen --expected-per-class) — "
+              f"tu doi chieu thu cong voi doi-chieu-du-lieu-goc-va-hang-so-tham-chieu.md muc 3.0.")
+        return None
+
+    rows = []
+    mismatches = []
+    for cn, exp_v in expected_per_class.items():
+        got_v = per_class_iou.get(cn)
+        if got_v is None:
+            mismatches.append(f"  {cn}: KHONG CO trong ket qua tinh duoc (kiem lai CLASS_NAMES)")
+            continue
+        diff = abs(got_v - exp_v)
+        row = f"  {cn:14s} computed={got_v:.7f}  expected={exp_v:.7f}  lech={diff:.7f}"
+        rows.append(row)
+        if diff >= tol:
+            mismatches.append(row)
+
+    print(f"[{label}] Bang per-class (computed vs expected):\n" + "\n".join(rows))
+    if mismatches:
+        raise RuntimeError(
+            f"[{label}] CONG PER-CLASS FAIL — cac lop lech qua nguong {tol}:\n"
+            + "\n".join(mismatches))
+    print(f"[{label}] Cong per-class PASS ({len(expected_per_class)} lop, nguong {tol}).")
+    return True
 
 
 def gate_5_2_check(deltas):
@@ -225,13 +314,19 @@ def gate_5_3_check(all_miou9: float, tol: float = 1e-6):
 
 def run_gates(spec, results, distances, gate_tol):
     label = spec['label']
+    none_r = results['none']
 
-    diff = gate_5_1_check(results['none']['miou9'], spec.get('expected_miou'), gate_tol)
+    gate_5_1_relation_check(none_r['miou9'], none_r['miou8'], none_r['per_class_iou'])
+    print(f"[{label}] Cong quan he mIoU-9/mIoU-8 PASS (tu kiem cong thuc macro).")
+
+    diff = gate_5_1_check(none_r['miou9'], none_r['miou8'], spec.get('expected_miou'), gate_tol)
     if diff is None:
         print(f"[{label}] Cong 5.1 CHUA XAC NHAN (khong truyen --expected-miou) — "
               f"tu doi chieu thu cong voi benchmark_results.csv truoc khi tin ket qua.")
     else:
-        print(f"[{label}] Cong 5.1 PASS (none.mIoU-9={results['none']['miou9']:.4f}, lech {diff:.4f}).")
+        print(f"[{label}] Cong 5.1 PASS (none.mIoU-9={none_r['miou9']:.4f}, lech {diff:.4f}).")
+
+    gate_5_1_per_class_check(label, none_r['per_class_iou'], spec.get('expected_per_class'), gate_tol)
 
     sorted_d = sorted(distances)
     deltas = [results[f'oracle_boundary_d{d}']['delta_miou9'] for d in sorted_d]
