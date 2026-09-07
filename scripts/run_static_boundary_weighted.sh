@@ -14,11 +14,18 @@
 #   bash scripts/run_static_boundary_weighted.sh --dry-run                 # smoke-test: 5 iteration, 4 ảnh
 #   bash scripts/run_static_boundary_weighted.sh --lambda2 0.3             # ablation lambda2 -> WORK_DIR tự thêm hậu tố
 #   bash scripts/run_static_boundary_weighted.sh --lambda2 0.3 --dry-run   # thứ tự tham số không quan trọng
+#   bash scripts/run_static_boundary_weighted.sh --seed 86 --work-dir work_dirs/foo  # doi seed + WORK_DIR tuong minh
 #
 # Kiểm tra tương thích ngược (mục 6.3 spec) — trỏ CONFIG vào config Run 3 cũ
 # (không có LAMBDA1_STATIC/LAMBDA2_STATIC) để xác nhận default 1.0/1.0:
 #   CONFIG=configs/unet_former_resnet18_static_boundary/static_boundary.yaml \
 #     bash scripts/run_static_boundary_weighted.sh --dry-run
+#
+# Run 5 — lặp lại Static (Run 3) ở seed 86 (docs/3-spec-run5-static-seed86.md),
+# mặc định KHÔNG truyền --seed thì vẫn là seed 19 (SEED trong config, không đổi):
+#   CONFIG=configs/unet_former_resnet18_static_boundary/static_boundary.yaml \
+#     bash scripts/run_static_boundary_weighted.sh \
+#     --seed 86 --work-dir work_dirs/phase1/run5_static_seed86 --dry-run
 #
 # Nếu Kaggle mount dataset ở path khác mặc định trong config, set DATA_ROOT
 # trước khi gọi (ghi đè ROOT_DIR/VAL_ROOT_DIR trực tiếp, không tạo file gì):
@@ -31,18 +38,23 @@ DATA_ROOT="${DATA_ROOT:-}"
 CONFIG="${CONFIG:-configs/unet_former_resnet18_static_boundary/run3b_static_lambda2_05.yaml}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# ── Parse tham số: --dry-run (cờ), --alpha/--lambda1/--lambda2 (override số
-#    thực, tuỳ chọn), thứ tự không quan trọng ─────────────────────────────────
+# ── Parse tham số: --dry-run (cờ), --alpha/--lambda1/--lambda2/--seed
+#    (override số thực/số nguyên, tuỳ chọn), --work-dir (override đường dẫn),
+#    thứ tự không quan trọng ────────────────────────────────────────────────
 DRY_RUN=""
 ALPHA=""
 LAMBDA1=""
 LAMBDA2=""
+SEED=""
+WORK_DIR_OVERRIDE=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --dry-run) DRY_RUN="--dry-run"; shift ;;
-        --alpha)   ALPHA="$2"; shift 2 ;;
-        --lambda1) LAMBDA1="$2"; shift 2 ;;
-        --lambda2) LAMBDA2="$2"; shift 2 ;;
+        --dry-run)  DRY_RUN="--dry-run"; shift ;;
+        --alpha)    ALPHA="$2"; shift 2 ;;
+        --lambda1)  LAMBDA1="$2"; shift 2 ;;
+        --lambda2)  LAMBDA2="$2"; shift 2 ;;
+        --seed)     SEED="$2"; shift 2 ;;
+        --work-dir) WORK_DIR_OVERRIDE="$2"; shift 2 ;;
         *) echo "Cảnh báo: bỏ qua tham số không nhận dạng được: $1" >&2; shift ;;
     esac
 done
@@ -53,6 +65,8 @@ echo " L_total = L_region + alpha * (lambda1*L_BCE_edge + lambda2*L_Affinity)"
 [[ -n "$ALPHA"   ]] && echo " alpha override: $ALPHA"
 [[ -n "$LAMBDA1" ]] && echo " lambda1 override: $LAMBDA1"
 [[ -n "$LAMBDA2" ]] && echo " lambda2 override: $LAMBDA2"
+[[ -n "$SEED"    ]] && echo " seed override: $SEED  (mac dinh khong doi la 19)"
+[[ -n "$WORK_DIR_OVERRIDE" ]] && echo " work-dir override: $WORK_DIR_OVERRIDE"
 if [[ -n "$DRY_RUN" ]]; then
     echo " [DRY-RUN] Chỉ chạy 5 iteration / 4 ảnh để kiểm tra luồng"
 fi
@@ -80,6 +94,8 @@ EXTRA_ARGS=()
 [[ -n "$ALPHA"     ]] && EXTRA_ARGS+=(--alpha "$ALPHA")
 [[ -n "$LAMBDA1"   ]] && EXTRA_ARGS+=(--lambda1 "$LAMBDA1")
 [[ -n "$LAMBDA2"   ]] && EXTRA_ARGS+=(--lambda2 "$LAMBDA2")
+[[ -n "$SEED"      ]] && EXTRA_ARGS+=(--seed "$SEED")
+[[ -n "$WORK_DIR_OVERRIDE" ]] && EXTRA_ARGS+=(--work-dir "$WORK_DIR_OVERRIDE")
 
 torchrun --nproc_per_node=2 src/train_static_boundary_weighted.py --config "$CONFIG" "${EXTRA_ARGS[@]}"
 

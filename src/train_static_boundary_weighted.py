@@ -26,6 +26,17 @@ Khác biệt so với Run 3 (train_static_boundary.py):
       chạy y hệt Run 3 cũ, đúng yêu cầu tương thích ngược). Có thêm
       --lambda1/--lambda2 CLI override (mirror --alpha đã có), tự thêm hậu tố
       vào WORK_DIR khi override.
+    - --seed CLI override (mirror --alpha/--lambda1/--lambda2): ghi đè
+      TRAIN.SEED — mặc định (không truyền cờ) giữ nguyên SEED=19 trong config,
+      dùng cho Run 5 seed 86 (docs/3-spec-run5-static-seed86.md) mà KHÔNG cần
+      config riêng: trỏ --config thẳng vào static_boundary.yaml của Run 3 (đã
+      tương thích ngược ở trên) rồi thêm --seed 86. CHỈ ảnh hưởng khởi tạo
+      trọng số/thứ tự batch/augmentation sampling — val set đọc từ thư mục cố
+      định (src/data/dataset.py, split_file=None), không phụ thuộc seed, nên
+      không có rủi ro trộn nhiễu val-set với nhiễu huấn luyện (spec mục 1.1);
+      hash danh sách file val được log ra để tự đối chiếu.
+    - --work-dir CLI override: ghi đè OUTPUT.WORK_DIR trực tiếp (ưu tiên tuyệt
+      đối so với mọi hậu tố _alpha/_lambda*/_seed tự động ở trên).
     - 2 sanity check MỚI (đúng mục 6.1/6.2 docs/run3b_spec_lambda2_05.md):
       đồng nhất công thức loss (#9) và lambda2 thực sự có hiệu lực trong
       alpha_affinity_effective (#10).
@@ -55,10 +66,17 @@ Usage (Kaggle, 2x T4):
     # Kiểm tra tương thích ngược (mục 6.3 spec): trỏ thẳng vào config Run 3 cũ
     # (không có LAMBDA1_STATIC/LAMBDA2_STATIC) -> phải tự dùng default 1.0/1.0:
     torchrun --nproc_per_node=2 src/train_static_boundary_weighted.py --config configs/unet_former_resnet18_static_boundary/static_boundary.yaml --dry-run
+
+    # Run 5 — lặp lại Static (Run 3) ở seed 86, đầy đủ checkpoint spec Run3b/Run4
+    # (docs/3-spec-run5-static-seed86.md), KHÔNG cần config riêng:
+    torchrun --nproc_per_node=2 src/train_static_boundary_weighted.py \\
+        --config configs/unet_former_resnet18_static_boundary/static_boundary.yaml \\
+        --seed 86 --work-dir work_dirs/phase1/run5_static_seed86 --dry-run
 """
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 import os
@@ -631,6 +649,16 @@ def main():
                         help='Ghi de BOUNDARY_LOSS.LAMBDA1_STATIC.')
     parser.add_argument('--lambda2', type=float, default=None,
                         help='Ghi de BOUNDARY_LOSS.LAMBDA2_STATIC (vd ablation lambda2 khac 0.5).')
+    parser.add_argument('--seed', type=int, default=None,
+                        help='Ghi de TRAIN.SEED cua config (vd --seed 86 cho Run 5, '
+                             'docs/3-spec-run5-static-seed86.md). Mac dinh (khong truyen co nay) '
+                             'giu nguyen SEED trong config (19). CHI anh huong khoi tao trong so/'
+                             'thu tu lay batch/augmentation sampling — KHONG duoc dung de sinh lai '
+                             'splits (val set doc tu thu muc co dinh, khong phu thuoc seed, xem hash '
+                             'log ben duoi).')
+    parser.add_argument('--work-dir', default=None,
+                        help='Ghi de OUTPUT.WORK_DIR cua config truc tiep (uu tien tuyet doi — khi '
+                             'truyen, BO QUA moi hau to tu dong _alphaX.XX/_lambda*/_seedN o duoi).')
     args = parser.parse_args()
 
     use_cuda = torch.cuda.is_available()
@@ -654,7 +682,7 @@ def main():
     out = cfg['OUTPUT']
     bl  = cfg.setdefault('BOUNDARY_LOSS', {})
 
-    # ── alpha/lambda1/lambda2 override + WORK_DIR suffix (ablation) ─────────
+    # ── alpha/lambda1/lambda2/seed override + WORK_DIR suffix (ablation) ────
     alpha  = bl.get('ALPHA', 0.4)
     lambda1_static = bl.get('LAMBDA1_STATIC', 1.0)
     lambda2_static = bl.get('LAMBDA2_STATIC', 1.0)
@@ -671,7 +699,12 @@ def main():
         lambda2_static = args.lambda2
         bl['LAMBDA2_STATIC'] = lambda2_static
         suffix += f'_lambda2_{lambda2_static:.2f}'
-    if suffix:
+    if args.seed is not None:
+        tr['SEED'] = args.seed
+        suffix += f'_seed{args.seed}'
+    if args.work_dir is not None:
+        out['WORK_DIR'] = args.work_dir
+    elif suffix:
         out['WORK_DIR'] = out['WORK_DIR'].rstrip('/') + suffix
 
     ignore_index      = bl.get('IGNORE_INDEX', 255)
@@ -737,6 +770,11 @@ def main():
     )
     log(f"Dataset: {len(train_ds)} train images, {len(val_ds)} val images "
         f"(train_dir={ds['TRAIN_IMG_DIR']}, val_dir={ds['VAL_IMG_DIR']})")
+    val_names_hash = hashlib.sha256(
+        '\n'.join(os.path.basename(img_path) for img_path, _ in val_ds.samples).encode('utf-8')
+    ).hexdigest()[:16]
+    log(f"Val file list hash: {val_names_hash}  (doc tu thu muc co dinh, KHONG phu thuoc SEED — "
+        f"phai khop hash cua run doi chung, xem docs/3-spec-run5-static-seed86.md muc 1.1/cong 2)")
 
     if args.dry_run:
         from torch.utils.data import Subset
