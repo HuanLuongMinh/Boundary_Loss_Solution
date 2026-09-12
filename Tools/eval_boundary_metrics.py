@@ -65,6 +65,23 @@ write_bce_edge_summary() (đã tồn tại, không sửa) in cố định 3 nhã
 (Tools/patch_bce_edge_summary.py dùng trực tiếp key boundary_iou_d1/d2/d4 từ
 JSON này). Có thể đổi --boundary-distances nếu chỉ cần số cho mục đích khác
 (vd báo cáo riêng theo đúng spec Cheng et al. 1,3,5).
+
+Phần A của docs/spec-per-image-bootstrap-eval-v2-ban-giao-claude-code.md —
+3 cờ THUẦN CỘNG THÊM, không cờ nào ⇒ hành vi y hệt trước khi thêm (gate 4.0,
+xem Tools/test_eval_boundary_metrics_dump_gate.py):
+
+    --dump-preds DIR              # ghi mask dự đoán PNG (0..8, không palette)
+    --dump-per-image-stats FILE   # ghi CSV thống kê đủ per-image + FILE_meta.json
+    --dump-only                   # bỏ qua phần in báo cáo gộp ra console
+
+Ví dụ (dùng cho Phần B/C — xem docs/huong-dan-chay-bootstrap-eval.md):
+
+    python Tools/eval_boundary_metrics.py \\
+        --config configs/unet_former_resnet18_static_boundary/static_boundary.yaml \\
+        --checkpoint /path/to/best_model.pth --model-type static_boundary \\
+        --dump-preds output/dump/run3_static_s19_iter36000/masks \\
+        --dump-per-image-stats output/dump/run3_static_s19_iter36000/per_image_stats.csv \\
+        --run-name run3_static_boundary --checkpoint-iter 36000 --dump-only
 """
 
 import argparse
@@ -87,6 +104,13 @@ from src.data.transforms import get_val_transforms
 from src.models.unet_former_resnet18 import build_model
 from src.utils.metrics import SegmentationMetrics
 from src.utils.boundary_metrics import BoundaryMetrics
+
+# Nhanh phu THUAN CONG THEM cho docs/spec-per-image-bootstrap-eval-v2-ban-giao-
+# claude-code.md Phan A (co --dump-preds/--dump-per-image-stats/--dump-only) —
+# import o day KHONG lam thay doi duong tinh mac dinh: chi thuc su duoc goi
+# trong main() khi mot trong 2 co dump duoc truyen (xem gate 4.0 muc 4.0 spec,
+# va Tools/test_eval_boundary_metrics_dump_gate.py).
+from Tools.per_image_dump import compute_per_image_stats, per_image_stats_columns, save_pred_masks
 
 
 # ── Dataset path resolution (duplicated on purpose từ
@@ -200,6 +224,60 @@ def run_eval(model, model_type: str, loader, device, num_classes: int,
     return seg_metrics.compute(), boundary_metrics.compute(), n_images, time.time() - t0
 
 
+@torch.no_grad()
+def run_eval_and_dump(model, model_type: str, loader, device, num_classes: int,
+                       ignore_index: int, connectivity: int, dilation_radius: int,
+                       boundary_distances, bf_tolerance: int, image_names,
+                       dump_preds_dir=None):
+    """Nhanh phu Phan A (docs/spec-per-image-bootstrap-eval-v2-ban-giao-claude-
+    code.md muc 2) — CHI duoc goi tu main() khi --dump-preds hoac
+    --dump-per-image-stats duoc truyen. Lap lai gan nhu nguyen ven vong lap
+    cua run_eval() (khong sua run_eval, khong doi hanh vi duong mac dinh —
+    gate 4.0), CONG THEM tinh per-image sufficient statistics
+    (Tools/per_image_dump.compute_per_image_stats) va luu mask PNG neu
+    dump_preds_dir duoc truyen. image_names: list ten anh (khong duoi), THEO
+    DUNG THU TU DataLoader tra ve (shuffle=False -> thu tu index, xem
+    val_ds.samples trong main())."""
+    model.eval()
+    seg_metrics = SegmentationMetrics(num_classes=num_classes, ignore_index=ignore_index)
+    boundary_metrics = BoundaryMetrics(
+        num_classes=num_classes, ignore_index=ignore_index,
+        boundary_distances=boundary_distances, bf_tolerance=bf_tolerance,
+        connectivity=connectivity, dilation_radius=dilation_radius,
+    )
+
+    per_image_rows = []
+    n_images = 0
+    t0 = time.time()
+    for images, masks in loader:
+        images = images.to(device, non_blocking=True)
+        masks_dev = masks.to(device, non_blocking=True)
+
+        if model_type == 'bce_edge':
+            logits, _edge_logits = model(images)  # không cần edge_logits cho metric này
+        elif model_type == 'static_boundary':
+            logits, _edge_logits, _fused_feature = model(images)  # không cần cho metric này
+        else:
+            logits = model(images)
+
+        seg_metrics.update(logits, masks_dev)
+        boundary_metrics.update(logits, masks_dev)
+
+        batch_names = image_names[n_images:n_images + images.shape[0]]
+        rows, preds_np = compute_per_image_stats(
+            logits, masks_dev, batch_names, OpenEarthMapDataset.CLASSES,
+            ignore_index, connectivity, dilation_radius, boundary_distances, bf_tolerance)
+        per_image_rows.extend(rows)
+        if dump_preds_dir:
+            save_pred_masks(preds_np, batch_names, dump_preds_dir)
+
+        n_images += images.shape[0]
+        print(f"  ... {n_images} ảnh đã xử lý ({time.time() - t0:.1f}s)", end='\r')
+
+    print()
+    return seg_metrics.compute(), boundary_metrics.compute(), n_images, time.time() - t0, per_image_rows
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--config', required=True, help='Đúng YAML đã dùng lúc train run này')
@@ -218,6 +296,22 @@ def main():
     ap.add_argument('--bf-tolerance', type=int, default=2,
                     help='Ngưỡng khoảng cách (pixel) khi so khớp biên GT/pred cho BF-Score')
     ap.add_argument('--output', default=None, help='Lưu kết quả JSON ra đây (tuỳ chọn)')
+
+    # ── Cờ Phần A (thuần cộng thêm) — docs/spec-per-image-bootstrap-eval-v2-
+    # ban-giao-claude-code.md mục 2.1. KHÔNG truyền cờ nào ⇒ hành vi y hệt
+    # trước khi thêm 3 cờ này (gate 4.0 — xem run_eval() không đổi ở trên).
+    ap.add_argument('--dump-preds', default=None, metavar='DIR',
+                    help='Ghi mask dự đoán ra PNG (uint8, giá trị 0..num_classes-1, không palette) '
+                         'vào thư mục này, 1 file/ảnh, tên trùng ảnh gốc (mục 2.4 spec).')
+    ap.add_argument('--dump-per-image-stats', default=None, metavar='FILE',
+                    help='Ghi CSV thống kê đủ per-image (tử số/mẫu số thô, không phải metric đã chia) '
+                         'ra đường dẫn này, kèm <stem>_meta.json cùng thư mục (mục 2.2-2.3 spec).')
+    ap.add_argument('--dump-only', action='store_true',
+                    help='Chỉ dump (mask/CSV nếu có cờ tương ứng), bỏ qua phần in báo cáo gộp ra console.')
+    ap.add_argument('--checkpoint-iter', dest='checkpoint_iter', type=int, default=None,
+                    help='(Tuỳ chọn) iteration của checkpoint — ghi vào <stem>_meta.json.')
+    ap.add_argument('--run-name', dest='run_name', default=None,
+                    help='(Tuỳ chọn) tên run — ghi vào <stem>_meta.json.')
     args = ap.parse_args()
 
     boundary_distances = tuple(int(x) for x in args.boundary_distances.split(','))
@@ -272,17 +366,72 @@ def main():
     num_classes = cfg['TRAIN']['NUM_CLASSES']
     ignore_index = OpenEarthMapDataset.IGNORE_INDEX
 
-    seg_result, boundary_result, n_images, elapsed = run_eval(
-        model, args.model_type, val_loader, device, num_classes, ignore_index,
-        connectivity, dilation_radius, boundary_distances, args.bf_tolerance)
+    # Cờ Phần A (mục 2.1 spec): CHỈ khi 1 trong 2 cờ dump được truyền mới đi
+    # nhánh phụ run_eval_and_dump — không cờ nào ⇒ gọi ĐÚNG run_eval() gốc,
+    # không đổi 1 dòng nào so với trước khi thêm 3 cờ (gate 4.0).
+    do_dump = bool(args.dump_preds) or bool(args.dump_per_image_stats)
 
-    print(f"\n=== Kết quả ({n_images} ảnh, {elapsed:.1f}s, {elapsed / max(n_images, 1):.3f}s/ảnh) ===")
-    print(f"mIoU (9 lớp):        {seg_result['mIoU']:.4f}")
-    for d in boundary_distances:
-        print(f"Boundary IoU d={d}:    {boundary_result[f'boundary_iou_d{d}']:.4f}")
-    print(f"BF-Score:            {boundary_result['bf_score']:.4f} "
-          f"(precision={boundary_result['bf_precision']:.4f}, recall={boundary_result['bf_recall']:.4f})")
-    print(f"ASD:                  {boundary_result['asd']:.4f} pixel")
+    if do_dump:
+        image_names = [os.path.splitext(os.path.basename(p))[0] for p, _ in val_ds.samples]
+        seg_result, boundary_result, n_images, elapsed, per_image_rows = run_eval_and_dump(
+            model, args.model_type, val_loader, device, num_classes, ignore_index,
+            connectivity, dilation_radius, boundary_distances, args.bf_tolerance,
+            image_names, dump_preds_dir=args.dump_preds)
+    else:
+        seg_result, boundary_result, n_images, elapsed = run_eval(
+            model, args.model_type, val_loader, device, num_classes, ignore_index,
+            connectivity, dilation_radius, boundary_distances, args.bf_tolerance)
+
+    if not args.dump_only:
+        print(f"\n=== Kết quả ({n_images} ảnh, {elapsed:.1f}s, {elapsed / max(n_images, 1):.3f}s/ảnh) ===")
+        print(f"mIoU (9 lớp):        {seg_result['mIoU']:.4f}")
+        for d in boundary_distances:
+            print(f"Boundary IoU d={d}:    {boundary_result[f'boundary_iou_d{d}']:.4f}")
+        print(f"BF-Score:            {boundary_result['bf_score']:.4f} "
+              f"(precision={boundary_result['bf_precision']:.4f}, recall={boundary_result['bf_recall']:.4f})")
+        print(f"ASD:                  {boundary_result['asd']:.4f} pixel")
+
+    if do_dump and args.dump_per_image_stats:
+        import csv
+        import subprocess
+
+        os.makedirs(os.path.dirname(args.dump_per_image_stats) or '.', exist_ok=True)
+        columns = per_image_stats_columns(OpenEarthMapDataset.CLASSES, boundary_distances)
+        with open(args.dump_per_image_stats, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=columns)
+            writer.writeheader()
+            writer.writerows(per_image_rows)
+        print(f"Đã lưu {len(per_image_rows)} hàng thống kê per-image: {args.dump_per_image_stats}")
+
+        try:
+            git_commit = subprocess.run(
+                ['git', 'rev-parse', 'HEAD'], capture_output=True, text=True, check=True,
+                cwd=os.path.dirname(os.path.abspath(__file__))).stdout.strip()
+        except Exception:
+            git_commit = 'unknown'
+
+        meta_path = os.path.splitext(args.dump_per_image_stats)[0] + '_meta.json'
+        with open(meta_path, 'w', encoding='utf-8') as f:
+            json.dump({
+                'checkpoint_path': args.checkpoint,
+                'checkpoint_iter': args.checkpoint_iter,
+                'run_name': args.run_name,
+                'val_split_file': ds.get('VAL_SPLIT_FILE'),
+                'n_images': n_images,
+                'bf_tolerance_theta': args.bf_tolerance,
+                'biou_dilations': list(boundary_distances),
+                'connectivity': connectivity,
+                'ignore_index': ignore_index,
+                'class_names': OpenEarthMapDataset.CLASSES,
+                'asd_distance_transform': 'scipy.ndimage.distance_transform_edt',
+                # Chưa xác định ở bước dump — Tools/bootstrap_boundary_ci.py (giai
+                # đoạn 2, mục 4.2 spec) mới là nơi DÒ chính sách này bằng dữ liệu,
+                # không phải bằng cách đọc code. Để trống ở đây, không đoán.
+                'empty_image_policy_observed': None,
+                'git_commit': git_commit,
+                'eval_wall_time_s': elapsed,
+            }, f, indent=2, ensure_ascii=False)
+        print(f"Đã lưu meta: {meta_path}")
 
     if args.output:
         os.makedirs(os.path.dirname(args.output) or '.', exist_ok=True)

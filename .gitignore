@@ -1,0 +1,9 @@
+# Output cua docs/spec-per-image-bootstrap-eval-v2-ban-giao-claude-code.md —
+# mask PNG (co the hang nghin file, 384 anh x nhieu checkpoint) + CSV thong
+# ke du + ket qua bootstrap/agriculture. Sinh lai duoc bang cach chay lai
+# Tools/eval_boundary_metrics.py / Tools/bootstrap_boundary_ci.py /
+# Tools/agriculture_fake_fragments.py — khong can commit.
+output/
+
+__pycache__/
+*.pyc
