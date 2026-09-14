@@ -1168,6 +1168,13 @@ def main():
         )
         log(f"Saved summary report → {os.path.join(out['WORK_DIR'], 'summary.txt')}")
 
+        # Dong duoc grep may-doc (khong qua log(), khong tien to timestamp) —
+        # de scripts/run_affinity_only.sh tu dong tim WORK_DIR that (da thay
+        # the {SEED} + moi hau to --alpha/--lambda2) va tu dong dump 2
+        # checkpoint ngay sau khi train xong, khong can nguoi dung go tay
+        # duong dan work_dir.
+        print(f"RUN7_WORK_DIR={out['WORK_DIR']}", flush=True)
+
     dist.destroy_process_group()
     log("Done.")
     if _log_file is not None:

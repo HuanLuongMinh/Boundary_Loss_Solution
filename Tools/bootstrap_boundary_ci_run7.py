@@ -291,12 +291,39 @@ def _parse_label_path(items, flag_name):
     return out
 
 
+def _parse_pairs(items):
+    """--pair MINUEND_LABEL=TRU_LABEL (lap lai) — cho phep so sanh checkpoint
+    Run 7/7b (tu manifest) voi BAT KY checkpoint nao da truyen qua --checkpoint,
+    KE CA 4 checkpoint ngoai baseline/bce04/static (run3b_aff02/run4_dynamic/
+    run5_static_s86_best/run5_static_s86_final) — 'ca cum 7 checkpoint cu' khi
+    can, khong chi 3 cai da tu dong hoa san (cap #7/#8/#9). Khong gioi han chi
+    dung cho checkpoint cu — co the ghep 2 nhan bat ky co trong dfs (vd 2
+    checkpoint Run 7 khac nhau ma khong khop dung mau cap #10/#11 tu dong)."""
+    pairs = []
+    for i, item in enumerate(items):
+        if '=' not in item:
+            raise ValueError(f"--pair phai co dang MINUEND=TRU, nhan: {item}")
+        a, b = item.split('=', 1)
+        pairs.append((f'paircustom{i + 1}_{a}_vs_{b}', a, b))
+    return pairs
+
+
 def parse_args():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--checkpoint', action='append', default=[],
-                     help='LABEL=duong_dan_per_image_stats.csv cho cac checkpoint CU can lam moc '
-                          '(run1_baseline/run2b_bce04/run3_static_s19) — lap lai. KHONG dung cho '
-                          'checkpoint Run 7/7b (tu quet qua --dump-dir).')
+                     help='LABEL=duong_dan_per_image_stats.csv cho checkpoint CU can lam moc — lap '
+                          'lai. 3 nhan run1_baseline/run2b_bce04/run3_static_s19 duoc cap #7/#8/#9 tu '
+                          'dong dung neu co; truyen them BAT KY nhan checkpoint cu nao khac (vd '
+                          'run3b_aff02/run4_dynamic/run5_static_s86_best/run5_static_s86_final — du '
+                          "'ca cum' 7 checkpoint cu) roi ghep cap qua --pair de so sanh khi can. KHONG "
+                          'dung cho checkpoint Run 7/7b (tu quet qua --dump-dir).')
+    ap.add_argument('--pair', action='append', default=[],
+                     help='(Tuy chon) MINUEND_LABEL=TRU_LABEL — lap lai de dinh nghia THEM cap can '
+                          'bootstrap, ngoai 5 cap tu dong (#7/#8/#9/#10/#11). Dung de so sanh checkpoint '
+                          'Run 7/7b vua dump voi BAT KY checkpoint nao da truyen qua --checkpoint (vd so '
+                          'voi ca 7 checkpoint cu, khong chi 3 cai mac dinh), hoac ghep 2 nhan Run 7 '
+                          'khac nhau. Nhan phai co trong --checkpoint hoac trong manifest Run 7/7b '
+                          '(xem output/dump/checkpoints_manifest_run7.json de biet ten nhan chinh xac).')
     ap.add_argument('--dump-dir', dest='dump_dir', default='output/dump',
                      help='Thu muc chua dump cua Run 7/7b (quet manifest tu day, muc 4.1 spec).')
     ap.add_argument('--reference', action='append', default=[],
@@ -433,24 +460,45 @@ def main():
                 if label_a and label_b:
                     add_pair(f'pair11_affonly_s{sA}_vs_s{sB}', label_a, label_b)
 
-    if not all_rows:
-        raise RuntimeError("Khong tinh duoc cap nao — kiem tra lai --checkpoint/--dump-dir.")
+    # Cap TUY CHON do nguoi dung tu dinh nghia qua --pair (muc "khi can, so
+    # sanh voi ca cum 7 checkpoint cu, khong chi 3 cai tu dong hoa san #7/#8/
+    # #9") — nhan bat ky trong --checkpoint HOAC trong manifest Run 7/7b deu
+    # dung duoc; add_pair() da tu bo qua (khong loi) neu 1 trong 2 nhan chua
+    # nap qua --checkpoint.
+    for pair_id, label_a, label_b in _parse_pairs(args.pair):
+        add_pair(pair_id, label_a, label_b)
 
-    os.makedirs(args.output_dir, exist_ok=True)
-    csv_path = os.path.join(args.output_dir, 'bootstrap_ci_run7.csv')
-    md_path = os.path.join(args.output_dir, 'bootstrap_ci_run7.md')
-    pd.DataFrame(all_rows).to_csv(csv_path, index=False)
-    with open(md_path, 'w', encoding='utf-8') as f:
-        f.write('# Bootstrap CI Run 7 (Affinity-only) — cap 7-10, tach biet output/bootstrap/ cu\n\n')
-        f.write(f'Quy uoc gop: **{convention}**' +
-                (f', chinh sach anh rong: **{empty_policy}**\n\n' if convention == 'macro' else '\n\n'))
-        f.write(f'B={args.n_boot}, seed={args.seed}\n\n')
-        f.write('| Cap | Dai luong | Median | CI 95% | P(<0) | Observed |\n|---|---|---|---|---|---|\n')
-        for r in all_rows:
-            ci = f"[{r['ci_lo']:.4f}, {r['ci_hi']:.4f}]" if r['ci_lo'] == r['ci_lo'] else 'N/A'
-            f.write(f"| {r['pair_id']} | {r['quantity']} | {r['median']:.4f} | {ci} | "
-                    f"{r['p_delta_lt_0']:.4f} | {r['observed_delta']:.4f} |\n")
-    print(f"\nDa ghi {csv_path} va {md_path}.")
+    if not all_rows:
+        # KHONG phai loi — day la trang thai binh thuong khi moi co 1 seed Run 7
+        # xong, chua co run7b, va khong truyen --checkpoint cho baseline/bce04/
+        # static (muc "chi tap trung affinity-only, khong can checkpoint khac"):
+        # cap #7/#8/#9 can checkpoint cu, #10 can run7b, #11 can >=2 seed —
+        # khong cai nao co thi don gian la CHUA CO GI DE SO SANH cap-doi, khong
+        # phai script chay sai. KHONG viet CSV/MD rong, KHONG raise — van tiep
+        # tuc thu bang lien-seed ben duoi (dung 'common_iters' rieng, co the
+        # co du lieu ngay ca khi khong co checkpoint @40000), roi ket thuc binh
+        # thuong (exit code 0) de scripts/run_affinity_only.sh khong bi coi la
+        # buoc nay that bai.
+        print("\nChua co cap nao de bootstrap cap-doi (can >=2 seed Run 7 cung iter, hoac run7b "
+              "cung seed, hoac truyen --checkpoint cho run1_baseline/run2b_bce04/run3_static_s19 "
+              "de so sanh voi checkpoint cu). Khong ghi bootstrap_ci_run7.csv/.md — day khong phai "
+              "loi, chi la chua co du lieu de so sanh cap-doi. Van kiem bang lien-seed ben duoi.")
+    else:
+        os.makedirs(args.output_dir, exist_ok=True)
+        csv_path = os.path.join(args.output_dir, 'bootstrap_ci_run7.csv')
+        md_path = os.path.join(args.output_dir, 'bootstrap_ci_run7.md')
+        pd.DataFrame(all_rows).to_csv(csv_path, index=False)
+        with open(md_path, 'w', encoding='utf-8') as f:
+            f.write('# Bootstrap CI Run 7 (Affinity-only) — cap 7-10, tach biet output/bootstrap/ cu\n\n')
+            f.write(f'Quy uoc gop: **{convention}**' +
+                    (f', chinh sach anh rong: **{empty_policy}**\n\n' if convention == 'macro' else '\n\n'))
+            f.write(f'B={args.n_boot}, seed={args.seed}\n\n')
+            f.write('| Cap | Dai luong | Median | CI 95% | P(<0) | Observed |\n|---|---|---|---|---|---|\n')
+            for r in all_rows:
+                ci = f"[{r['ci_lo']:.4f}, {r['ci_hi']:.4f}]" if r['ci_lo'] == r['ci_lo'] else 'N/A'
+                f.write(f"| {r['pair_id']} | {r['quantity']} | {r['median']:.4f} | {ci} | "
+                        f"{r['p_delta_lt_0']:.4f} | {r['observed_delta']:.4f} |\n")
+        print(f"\nDa ghi {csv_path} va {md_path}.")
 
     write_interseed_amplitude(manifest, boundary_distances, args.diag_value,
                               os.path.join(args.output_dir, 'run7_interseed_amplitude.md'))
