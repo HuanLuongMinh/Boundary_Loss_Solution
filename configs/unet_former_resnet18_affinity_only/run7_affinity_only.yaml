@@ -1,0 +1,82 @@
+DATASET:
+  # Y HET configs/unet_former_resnet18_static_boundary/static_boundary.yaml —
+  # khong split/subset, dung thang toan bo images/train + images/val co san.
+  # ROOT_DIR duoc resolve dong luc chay (resolve_dataset_paths() trong
+  # src/train_affinity_only.py).
+  ROOT_DIR: "/kaggle/input/datasets/aletbm/global-land-cover-mapping-openearthmap"
+  TRAIN_IMG_DIR: "images/train"
+  TRAIN_MASK_DIR: "labels/train"
+  VAL_ROOT_DIR: "/kaggle/input/datasets/aletbm/global-land-cover-mapping-openearthmap"
+  VAL_IMG_DIR: "images/val"
+  VAL_MASK_DIR: "labels/val"
+
+MODEL:
+  # Kien truc UNetFormer y het baseline/Run 2/Run 3 — src/models/unet_former_resnet18.py
+  # KHONG doi. Run 7 KHONG co BoundaryHead (xem BOUNDARY_LOSS ben duoi va
+  # docstring dau src/train_affinity_only.py — AffinityLoss khong co tham so
+  # hoc duoc nen khong can head phu nao).
+  ARCH: "UnetFormer"
+  ENCODER: "resnet18.fb_swsl_ig1b_ft_in1k"
+  PRETRAINED: true
+  DECODE_CHANNELS: 64
+  WINDOW_SIZE: 8
+  NUM_HEADS: 8
+  MLP_RATIO: 4.0
+  DROP_PATH_RATE: 0.1
+  DROPOUT_RATIO: 0.1
+
+LOSS:
+  # L_region — y het baseline/Run 2/Run 3, tai su dung nguyen CombinedLoss (CE+Dice), KHONG doi.
+  TYPE: "CombinedLoss"
+  CE_WEIGHT: 1.0
+  DICE_WEIGHT: 1.0
+
+# Run 7 (docs/spec-run7-affinity-only-ban-giao-claude-code.md) — affinity-only:
+# tat han nhanh BCE-edge (khong ton tai trong cong thuc, khong phai chi
+# nhan trong so 0), chi giu affinity, lieu doi xung voi Static (alpha=0.4).
+#
+# L_total = L_region + ALPHA * LAMBDA2_STATIC * L_Affinity
+#         = L_region + 0.4 * 1.0 * L_Affinity
+#         = L_region + 0.4 * L_Affinity
+#
+# alpha_bce_effective luon = 0.0 (hang so, khong tinh vao tong).
+# alpha_affinity_effective = ALPHA * LAMBDA2_STATIC = 0.4.
+BOUNDARY_LOSS:
+  ALPHA: 0.4                    # lieu affinity don - dung co che da dung cho "BCE lambda=0.4"
+                                 # (ALPHA mot minh quyet dinh lieu khi chi mot nhanh bat)
+  LAMBDA1_STATIC: 1.0           # GIU LAI chi de log/CSV dong dang voi Run 3/3b - KHONG co tac
+                                 # dung trong cong thuc (khong co L_BCE de nhan voi no)
+  LAMBDA2_STATIC: 1.0           # ALPHA mot minh quyet dinh lieu, khong doi field nay
+  AFFINITY_WINDOW_K: 5          # GIU NGUYEN Run 3 (K trong cua so KxK hang xom cho L_Affinity)
+  AFFINITY_DISTANCE: cosine     # GIU NGUYEN Run 3 ("cosine" | "l2")
+  AFFINITY_MARGIN: 1.0          # GIU NGUYEN Run 3 - margin cho contrastive term
+  CONNECTIVITY: 4               # GIU NGUYEN - 4-connected, dinh nghia bien dung chung
+  DILATION_RADIUS: 0            # GIU NGUYEN - khong dilate them, edge width = 1 pixel. Nghi van
+                                 # nearest-downsample stride-4 van con mo (Run 6, da huy), KHONG
+                                 # sua o run nay.
+  IGNORE_INDEX: 255             # khop CombinedLoss/SegmentationMetrics hien co
+
+TRAIN:
+  # SEED KHONG duoc dat o day (khong co key nay) — BAT BUOC nap qua --seed
+  # luc chay (src/train_affinity_only.py se DUNG NGAY va bao loi ro rang neu
+  # thieu --seed). Chi anh huong khoi tao trong so/thu tu lay batch/
+  # augmentation sampling — val set doc tu thu muc co dinh, khong sinh lai.
+  NUM_CLASSES: 9
+  MAX_ITERS: 40000
+  VAL_INTERVAL: 4000
+  EARLY_STOPPING_PATIENCE: 4
+  BATCH_SIZE_PER_GPU: 4
+  NUM_WORKERS: 2
+  WARMUP_ITERS: 500
+
+OPTIMIZER:
+  BASE_LR: 0.0006
+  WEIGHT_DECAY: 0.01
+  GRAD_CLIP: 5.0
+
+OUTPUT:
+  # Placeholder {SEED} BAT BUOC phai co trong chuoi nay — src/train_affinity_only.py
+  # thay the bang seed that luc chay (vd seed=19 -> .../run7_affinity_only_seed19),
+  # day la co che DUY NHAT de nhieu seed khong ghi de len nhau. Work dir RIENG,
+  # khong dung work_dirs/static_boundary hay bat ky run nao khac.
+  WORK_DIR: "/kaggle/working/unetformer-resnet18-affinity-only-openearthmap/work_dirs/run7_affinity_only_seed{SEED}"

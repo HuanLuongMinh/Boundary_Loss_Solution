@@ -1,0 +1,63 @@
+DATASET:
+  # Y HET run7_affinity_only.yaml — khong split/subset, dung thang toan bo
+  # images/train + images/val co san. ROOT_DIR duoc resolve dong luc chay.
+  ROOT_DIR: "/kaggle/input/datasets/aletbm/global-land-cover-mapping-openearthmap"
+  TRAIN_IMG_DIR: "images/train"
+  TRAIN_MASK_DIR: "labels/train"
+  VAL_ROOT_DIR: "/kaggle/input/datasets/aletbm/global-land-cover-mapping-openearthmap"
+  VAL_IMG_DIR: "images/val"
+  VAL_MASK_DIR: "labels/val"
+
+MODEL:
+  # Kien truc UNetFormer y het run7_affinity_only.yaml. KHONG doi.
+  ARCH: "UnetFormer"
+  ENCODER: "resnet18.fb_swsl_ig1b_ft_in1k"
+  PRETRAINED: true
+  DECODE_CHANNELS: 64
+  WINDOW_SIZE: 8
+  NUM_HEADS: 8
+  MLP_RATIO: 4.0
+  DROP_PATH_RATE: 0.1
+  DROPOUT_RATIO: 0.1
+
+LOSS:
+  TYPE: "CombinedLoss"
+  CE_WEIGHT: 1.0
+  DICE_WEIGHT: 1.0
+
+# Run 7b (muc 1.2 spec-run7-affinity-only) — GIONG HET run7_affinity_only.yaml,
+# CHI doi ALPHA 0.4 -> 0.2 (lieu phu, doi xung voi BCE lambda=0.2 va Run 3b).
+# Chi chay SAU KHI da co ket qua lieu 0.4 o it nhat 1 seed (uu tien thap hon).
+#
+# L_total = L_region + ALPHA * LAMBDA2_STATIC * L_Affinity
+#         = L_region + 0.2 * 1.0 * L_Affinity
+BOUNDARY_LOSS:
+  ALPHA: 0.2                    # <-- DUY NHAT khac run7_affinity_only.yaml
+  LAMBDA1_STATIC: 1.0           # GIU LAI chi de log/CSV dong dang - khong co tac dung
+  LAMBDA2_STATIC: 1.0
+  AFFINITY_WINDOW_K: 5
+  AFFINITY_DISTANCE: cosine
+  AFFINITY_MARGIN: 1.0
+  CONNECTIVITY: 4
+  DILATION_RADIUS: 0
+  IGNORE_INDEX: 255
+
+TRAIN:
+  # SEED KHONG duoc dat o day — BAT BUOC nap qua --seed, giong het run7 chinh.
+  NUM_CLASSES: 9
+  MAX_ITERS: 40000
+  VAL_INTERVAL: 4000
+  EARLY_STOPPING_PATIENCE: 4
+  BATCH_SIZE_PER_GPU: 4
+  NUM_WORKERS: 2
+  WARMUP_ITERS: 500
+
+OPTIMIZER:
+  BASE_LR: 0.0006
+  WEIGHT_DECAY: 0.01
+  GRAD_CLIP: 5.0
+
+OUTPUT:
+  # Placeholder {SEED} BAT BUOC — xem run7_affinity_only.yaml. Work dir RIENG
+  # (run7b_..., khong dung run7_...).
+  WORK_DIR: "/kaggle/working/unetformer-resnet18-affinity-only-openearthmap/work_dirs/run7b_affinity_only_lambda02_seed{SEED}"
