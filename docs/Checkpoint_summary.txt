@@ -1,0 +1,8 @@
+1. best_miou_Static_s86.pth
+2. best_miou_aff_s19.pth
+3. best_miou_aff_s86.pth
+4. best_model_BCE_02.pth
+5. best_model_BCE_04.pth
+6. best_model_Static_S19.pth
+7. best_model_baseline.pth
+8. final_iter40000_static_s86.pth
