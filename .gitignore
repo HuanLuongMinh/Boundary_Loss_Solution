@@ -7,3 +7,7 @@ output/
 
 __pycache__/
 *.pyc
+
+# dump.zip goc (~167 MB) vuot gioi han 100 MB cua GitHub — chi commit ban chia nho data/dump_parts/
+# (tao bang: python Tools/dump_archive.py split)
+data/dump.zip

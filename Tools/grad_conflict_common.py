@@ -318,5 +318,8 @@ def load_gt_cached(val_ds, idx, cache_dir):
     gt = gt.astype(np.int64)
     if path:
         os.makedirs(cache_dir, exist_ok=True)
-        np.save(path, gt.astype(np.uint8) if gt.max() < 256 else gt)
+        # Ghi nguyen tu (tmp + replace): an toan khi 2 tien trinh --parallel cung doc/ghi cache.
+        tmp = f'{path}.{os.getpid()}.tmp.npy'
+        np.save(tmp, gt.astype(np.uint8) if gt.max() < 256 else gt)
+        os.replace(tmp, path)
     return name, gt

@@ -97,7 +97,12 @@ python Tools/test_grad_conflict_probe.py --e2e # chậm: gates -> measure -> sum
 
   Nếu một file mang tên khác, truyền riêng nó: `--ckpt static_s19_36k=/duong/dan/file_khac.pth`.
 
-- **Một thư mục chứa các dump cũ**. Mỗi dump là một thư mục con có `masks/` và `per_image_stats.csv`. Tên thư mục con mặc định:
+- **Dump: mặc định lấy từ repo.**
+  - `data/dump_parts/` chứa `dump.zip` đã chia thành 4 phần ≤ 45 MB, kèm `manifest.json` (sha256).
+  - Nếu không truyền `--dump-root`, script tự ghép, kiểm sha256 và giải nén vào `/tmp/dump_repo` (`Tools/dump_archive.py join`), rồi dùng luôn.
+  - Chỉ khi muốn dùng dump đặt ở nơi khác mới truyền `--dump-root`, theo quy ước dưới đây.
+  - Hướng dẫn đầy đủ: `docs/huong-dan-kaggle-tung-buoc-grad-conflict.md`.
+- **(Tuỳ chọn) Một thư mục chứa các dump cũ** (`--dump-root`). Mỗi dump là một thư mục con có `masks/` và `per_image_stats.csv`. Tên thư mục con mặc định:
 
   ```
   /kaggle/input/my-dumps/
@@ -108,7 +113,7 @@ python Tools/test_grad_conflict_probe.py --e2e # chậm: gates -> measure -> sum
 
   Nếu tên khác, truyền riêng: `--dump bce04_40k=/duong/dan/dump_khac`. Dump còn thiếu (thường là BCE λ=0.2) thì thêm `--make-missing-dumps`; script tự tạo vào `output/dump/<tên>/`.
 
-- **pos_weight cho 5 checkpoint có BCE**: lấy dòng `pos_weight used` trong `summary.txt` của từng run. Không tìm được thì truyền `=auto`.
+- **pos_weight cho 5 checkpoint có BCE**: script **tự đọc** dòng `pos_weight used` từ 4 file summary đặt cùng thư mục checkpoint. Các file phải mang đúng tên `summary_static_s19.txt`, `summary_static_s86.txt` (dùng cho cả @36k và @40k), `summary_bce04.txt`, `summary_bce02.txt`. Script kiểm tra seed / `lambda_edge` trong từng file để bắt trường hợp đặt nhầm tên. Cách copy và đổi tên: bước 0.2 của `docs/huong-dan-kaggle-tung-buoc-grad-conflict.md`. Muốn ghi đè thì truyền `--pos-weight LABEL=<so>` hoặc `=auto`. Biến `$PW` ở các lệnh dưới khi đó có thể để trống.
 
 ### Bước 2. Mở terminal hoặc cell notebook tại thư mục repo
 
@@ -123,8 +128,7 @@ python Tools/test_spurious_holes.py && python Tools/test_grad_conflict_probe.py 
 CK=/kaggle/input/my-ckpts
 DP=/kaggle/input/my-dumps
 DATA=/kaggle/input/datasets/aletbm/global-land-cover-mapping-openearthmap
-PW="--pos-weight static_s19_36k=<log> --pos-weight static_s86_36k=<log> --pos-weight static_s86_40k=<log> \
-    --pos-weight bce04_40k=<log> --pos-weight bce02_40k=<log>"
+PW=""      # để trống: pos_weight đọc tự động từ summary_*.txt; chỉ điền nếu muốn ghi đè, vd "--pos-weight bce02_40k=auto"
 ```
 
 ### Bước 4. Kiểm lệnh trước khi chạy (không tốn GPU)

@@ -16,6 +16,9 @@
 # Tuy chon:
 #   --ckpt LABEL=PATH      ghi de file checkpoint cua 1 nhan (ten file khac mac dinh)
 #   --dump LABEL=DIR       ghi de thu muc dump cua 1 nhan
+#   --dump-parts DIR       (mac dinh data/dump_parts) dump.zip da chia nho trong repo: neu KHONG truyen
+#                          --dump-root, script tu ghep + kiem sha256 + giai nen vao --dump-extract roi dung
+#   --dump-extract DIR     noi giai nen dump tu repo (mac dinh /tmp/dump_repo — khong lam phinh output Kaggle)
 #   --make-missing-dumps   tao dump con thieu (vd BCE lambda=0.2) bang Tools/eval_boundary_metrics.py
 #                          vao output/dump/<ten>/ truoc khi chay (can cho cong 7)
 #   --dry-run N            chay thu N anh, output vao output/*_dryrun/
@@ -27,8 +30,11 @@
 #   --force                chay lai du da co ket qua
 #   --print-only           chi in lenh se chay, khong chay
 #
-# pos_weight: lay dong "pos_weight used" trong summary.txt (hoac log train) cua tung run co BCE.
-# Khong co -> truyen LABEL=auto (uoc luong lai, xap xi). Thieu pos_weight cho ckpt co BCE -> script dung.
+# pos_weight: TU DONG doc tu summary cua tung run, dat CUNG THU MUC checkpoint voi ten:
+#   summary_static_s19.txt (Run 3 seed 19)   summary_static_s86.txt (Run 5 seed 86, dung cho ca @36k va @40k)
+#   summary_bce04.txt (BCE lambda 0.4)       summary_bce02.txt (BCE lambda 0.2)
+# (dong "pos_weight used : X"; script kiem seed/lambda_edge trong file de bat nham ten).
+# --pos-weight LABEL=X (hoac =auto) ghi de gia tri doc tu file.
 
 set -e
 set -o pipefail
@@ -77,8 +83,22 @@ declare -A ITER=(
   [bce02_40k]=40000 [affonly_s19_40k]=40000 [affonly_s86_40k]=40000 [baseline_40k]=40000
 )
 HAS_BCE="static_s19_36k static_s86_36k static_s86_40k bce04_40k bce02_40k"
+# pos_weight tu dong: doc dong "pos_weight used : X" trong summary.txt cua run, dat CUNG THU MUC checkpoint
+# voi ten rieng duoi day (4 file goc deu ten summary.txt nen phai doi ten). Kem dau hieu nhan dien de bat nham file.
+declare -A SUMFILE=(
+  [static_s19_36k]=summary_static_s19.txt [static_s86_36k]=summary_static_s86.txt
+  [static_s86_40k]=summary_static_s86.txt [bce04_40k]=summary_bce04.txt [bce02_40k]=summary_bce02.txt
+)
+declare -A SUMSIGN=(   # regex phai khop trong file (seed / lambda_edge)
+  [static_s19_36k]='Random seed for statistics *: *19\b'
+  [static_s86_36k]='Random seed for statistics *: *86\b'
+  [static_s86_40k]='Random seed for statistics *: *86\b'
+  [bce04_40k]='lambda_edge *: *0\.4'
+  [bce02_40k]='lambda_edge *: *0\.2'
+)
 
 CKPT_DIR=""; DUMP_ROOT=""; DATA_ROOT="${DATA_ROOT:-}"; OUT="output"
+DUMP_PARTS="data/dump_parts"; DUMP_EXTRACT="/tmp/dump_repo"
 DRY=""; PARALLEL=""; STAGES=""; ONLY=""; DEVICE=""; FORCE=""; PRINT=""; MAKE_DUMPS=""
 declare -A CK DP PW
 
@@ -89,6 +109,8 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --ckpt-dir)   CKPT_DIR="$2"; shift 2 ;;
     --dump-root)  DUMP_ROOT="$2"; shift 2 ;;
+    --dump-parts) DUMP_PARTS="$2"; shift 2 ;;
+    --dump-extract) DUMP_EXTRACT="$2"; shift 2 ;;
     --data-root)  DATA_ROOT="$2"; shift 2 ;;
     --ckpt)       chk_label "$2" --ckpt;       CK["${2%%=*}"]="${2#*=}"; shift 2 ;;
     --dump)       chk_label "$2" --dump;       DP["${2%%=*}"]="${2#*=}"; shift 2 ;;
@@ -106,6 +128,19 @@ while [[ $# -gt 0 ]]; do
     *) die "tham so khong biet: $1" ;;
   esac
 done
+
+# ── Dump tu repo: neu khong truyen --dump-root, ghep data/dump_parts -> giai nen -> lay DUMP_ROOT ──
+if [[ -z "$DUMP_ROOT" && -f "$DUMP_PARTS/manifest.json" ]]; then
+  echo "== Giai nen dump tu repo ($DUMP_PARTS -> $DUMP_EXTRACT)"
+  JOIN_OUT="$(python Tools/dump_archive.py join --parts-dir "$DUMP_PARTS" --dest "$DUMP_EXTRACT" 2>&1)" \
+    || { echo "$JOIN_OUT"; die "ghep/giai nen dump that bai"; }
+  echo "$JOIN_OUT" | sed 's/^/   /'
+  DUMP_ROOT="$(echo "$JOIN_OUT" | sed -n 's/^DUMP_ROOT=//p' | tail -1)"
+  [[ -d "$DUMP_ROOT" ]] || die "khong xac dinh duoc DUMP_ROOT sau khi giai nen"
+elif [[ -z "$DUMP_ROOT" ]]; then
+  echo "   CANH BAO: khong co --dump-root va khong thay $DUMP_PARTS/manifest.json -> chi dung dump trong $OUT/dump/"
+fi
+echo "   DUMP_ROOT = ${DUMP_ROOT:-(khong co)}"
 
 # ── Ghep checkpoint + dump cho tung nhan ──
 echo "== Ghep checkpoint / dump"
@@ -131,8 +166,18 @@ for lb in ${ONLY:-$LABELS}; do
     if [[ -n "$PRINT" ]]; then echo "   + ${cmd[*]}"; else "${cmd[@]}"; fi
   fi
   printf "   %-16s ckpt: %-60s dump: %s\n" "$lb" "${ck:-(KHONG CO)}" "${dp:-(KHONG CO)}"
-  if [[ -n "$ck" && " $HAS_BCE " == *" $lb "* && -z "${PW[$lb]:-}" ]]; then
-    die "[$lb] co BCE nhung thieu --pos-weight $lb=<gia tri log | auto>"
+  if [[ -n "$ck" && " $HAS_BCE " == *" $lb "* ]]; then
+    if [[ -n "${PW[$lb]:-}" ]]; then
+      echo "                    pos_weight = ${PW[$lb]}  (tu --pos-weight)"
+    else
+      sf="$(dirname "$ck")/${SUMFILE[$lb]}"
+      [[ -f "$sf" ]] || die "[$lb] co BCE nhung khong co --pos-weight va khong thay $sf"
+      grep -Eq "${SUMSIGN[$lb]}" "$sf" || die "[$lb] $sf khong phai summary cua run nay (khong khop '${SUMSIGN[$lb]}') — kiem tra ten file"
+      v="$(grep -E 'pos_weight used' "$sf" | head -1 | sed -E 's/.*:[[:space:]]*([0-9.]+).*/\1/')"
+      [[ "$v" =~ ^[0-9]+(\.[0-9]+)?$ ]] || die "[$lb] khong doc duoc dong 'pos_weight used' trong $sf"
+      PW[$lb]="$v"
+      echo "                    pos_weight = $v  (doc tu $(basename "$sf"))"
+    fi
   fi
   [[ -n "$ck" ]] && CK[$lb]="$ck" || unset "CK[$lb]"
   [[ -n "$dp" ]] && DP[$lb]="$dp" || unset "DP[$lb]"

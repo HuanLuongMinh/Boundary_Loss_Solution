@@ -1,0 +1,28 @@
+{
+  "source_name": "dump.zip",
+  "total_bytes": 175015577,
+  "sha256": "9507b177dbbf2c1ff866001d29ae9c50fb20c1cb7eabb35c9abb526ffd0bb315",
+  "part_mb": 45,
+  "parts": [
+    {
+      "name": "dump.zip.part000",
+      "bytes": 47185920,
+      "sha256": "dd62fd2841820a20301be5450b440fb95266739231e04824cbbee7a54a5ad4c1"
+    },
+    {
+      "name": "dump.zip.part001",
+      "bytes": 47185920,
+      "sha256": "cbfc8e18e950b67ee9631f2429cac9a47f7a75a227a732069e93e779099f2c7f"
+    },
+    {
+      "name": "dump.zip.part002",
+      "bytes": 47185920,
+      "sha256": "ae4500e28d4a557a98e9ce5c9b4ede7e996e0359490026c95bcb39a2ca067690"
+    },
+    {
+      "name": "dump.zip.part003",
+      "bytes": 33457817,
+      "sha256": "f482f62f398f4fd78e5bf990d4293c0892bfc272109b70547b61a85c905f4cc2"
+    }
+  ]
+}
