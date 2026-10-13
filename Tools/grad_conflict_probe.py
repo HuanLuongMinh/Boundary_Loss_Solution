@@ -48,7 +48,7 @@ from Tools.grad_conflict_common import (
     CHECKPOINTS, MISSING_RUNS, CLASS_NAMES, NUM_CLASSES, IGNORE_INDEX, SEED, AXES, ALL_PAIRS,
     DECISION_CKPTS, FIGURE_CKPT, DIST_STRATA, SIZE_SMALL_MAX,
     pair_name, terms_of, term_weights, gt_strata_maps, parse_label_values, check_labels_known,
-    get_git_commit, file_fingerprint, write_json, read_json, append_log, load_gt_cached,
+    get_git_commit, file_fingerprint, write_json, read_json, append_log, load_gt_cached, probe_info,
 )
 
 TAU_PARAM = 0.05
@@ -82,13 +82,15 @@ class Probe:
         from src.losses.total_loss import StaticBoundaryTotalLoss
 
         self.label = label
-        self.info = CHECKPOINTS[label]
+        self.info = probe_info(label)
         self.cfg = cfg
         self.device = device
         self.model = build_eval_model(cfg, self.info['model_type']).to(device)
         sd = torch.load(ckpt_path, map_location=device)
         if isinstance(sd, dict) and 'model_state_dict' in sd and not any(k.startswith('base.') for k in sd):
             sd = sd['model_state_dict']
+        elif isinstance(sd, dict) and 'state_dict' in sd and 'iter' in sd:   # snapshot Phan D
+            sd = sd['state_dict']
         self.model.load_state_dict(sd)   # strict
         self.state_keys = list(sd.keys())
         self.dtype = dtype
@@ -343,25 +345,52 @@ def gate(gid, name, status, value=None, threshold=None, note=''):
     return {'gate': gid, 'name': name, 'status': status, 'value': value, 'threshold': threshold, 'note': note}
 
 
-def run_gates_for(label, args, ckpt_path, cfg, device, pos_weight, dump_dir, expected_override):
-    from torch.utils.data import DataLoader
+def run_gates_for(label, args, ckpt_path, cfg, device, pos_weight, dump_dir, expected_override,
+                  dataset=None, gate_ids=None):
+    """dataset=None -> tap val (Phan A). gate_ids=None -> moi cong (1,2,3,4,5,7). Phan D truyen tap con
+    (D4: {2,3,5} tren anh train cua tap do; D6: {1} tren val). Mac dinh giu y het hanh vi cu."""
     from Tools.oracle_boundary_ceiling import build_val_dataset, image_ids_of
-    from src.utils.losses import CombinedLoss
-    from src.losses.total_loss import StaticBoundaryTotalLoss
-    from src.losses.total_loss_affinity_only import AffinityOnlyTotalLoss
-    from src.losses.boundary_bce import BoundaryHead
-    from PIL import Image
 
-    info = CHECKPOINTS[label]
+    info = probe_info(label)
     probe = Probe(label, ckpt_path, cfg, device, pos_weight)
-    val_ds = build_val_dataset(cfg)
+    val_ds = build_val_dataset(cfg) if dataset is None else dataset
     image_ids = image_ids_of(val_ds)
     n = len(image_ids) if args.max_images is None else min(args.max_images, len(image_ids))
     dry = args.max_images is not None
     masks_dir, dump_csv = dump_paths(dump_dir)
     gates = []
 
-    # ── Cong 7 (danh sach anh) + Cong 1 (mIoU) — chung 1 luot forward ──
+    def want(g):
+        return gate_ids is None or g in gate_ids
+
+    if want(1) or want(7):
+        _gates_1_7(label, args, info, probe, val_ds, image_ids, n, dry, masks_dir, dump_csv, expected_override,
+                   device, gates, want)
+    if want(2):
+        _gate_2(info, probe, val_ds, n, cfg, device, pos_weight, gates)
+    if want(3):
+        _gate_3(label, probe, val_ds, n, ckpt_path, cfg, device, pos_weight, gates)
+    if want(4):
+        _gate_4(info, probe, device, gates)
+    if want(5):
+        _gate_5(args, probe, val_ds, n, device, gates)
+
+    statuses = [g['status'] for g in gates]
+    overall = 'PASS' if all(s in ('PASS', 'SKIP_DRYRUN') for s in statuses) else 'FAIL'
+    res = {'label': label, 'checkpoint_path': ckpt_path, 'checkpoint_fingerprint': file_fingerprint(ckpt_path),
+           'config': info['config'], 'iter': info['iter'], 'seed': info['seed'],
+           'pos_weight': pos_weight, 'dry_run': dry, 'n_images': n, 'device': str(device),
+           'overall': overall, 'gates': sorted(gates, key=lambda g: g['gate']),
+           'note': 'cong 6 (unit test lo) nam o output/spurious_holes/gates_holes.json',
+           'created_at': datetime.datetime.now().isoformat(timespec='seconds'), 'git_commit': get_git_commit()}
+    return res
+
+
+def _gates_1_7(label, args, info, probe, val_ds, image_ids, n, dry, masks_dir, dump_csv, expected_override,
+               device, gates, want):
+    """Cong 7 (danh sach anh) + Cong 1 (mIoU) — chung 1 luot forward."""
+    from torch.utils.data import DataLoader
+    from PIL import Image
     list_ok, list_note = None, ''
     if masks_dir is None:
         list_ok, list_note = False, 'khong truyen --dump-dir — khong kiem duoc danh sach anh voi dump'
@@ -408,7 +437,9 @@ def run_gates_for(label, args, ckpt_path, cfg, device, pos_weight, dump_dir, exp
     elif expected is None and dump_csv:
         expected, _e8 = miou_from_dump_csv(dump_csv)
         exp_src = f'dump per_image_stats.csv ({dump_csv}) — spec khong co hang so'
-    if expected is None:
+    if not want(1):
+        pass
+    elif expected is None:
         st = 'SKIP_DRYRUN' if dry else 'FAIL'
         gates.append(gate(1, 'nap dung checkpoint (mIoU-9)', st, {'miou9': miou9, 'miou8': miou8}, GATE_MIOU_TOL,
                           'khong co tham chieu — truyen --dump-dir (co per_image_stats.csv) hoac --expected-miou'))
@@ -423,12 +454,18 @@ def run_gates_for(label, args, ckpt_path, cfg, device, pos_weight, dump_dir, exp
           f"expected mIoU-9 = {expected} ({exp_src})")
 
     pix = (agree / total_px) if total_px else None
-    gates.append(gate(7, 'danh sach anh khop dump', 'PASS' if list_ok else 'FAIL',
-                      {'pixel_agreement_with_dumped_masks': pix}, 'khop tuyet doi (noi dung + thu tu)',
-                      list_note + ('' if pix is None or pix >= 0.99 else
-                                   f' | CANH BAO: argmax chi khop {pix:.4f} pixel voi mask dump')))
+    if want(7):
+        gates.append(gate(7, 'danh sach anh khop dump', 'PASS' if list_ok else 'FAIL',
+                          {'pixel_agreement_with_dumped_masks': pix}, 'khop tuyet doi (noi dung + thu tu)',
+                          list_note + ('' if pix is None or pix >= 0.99 else
+                                       f' | CANH BAO: argmax chi khop {pix:.4f} pixel voi mask dump')))
 
-    # ── Cong 2: dong nhat thuc loss tren 8 anh dau ──
+
+def _gate_2(info, probe, val_ds, n, cfg, device, pos_weight, gates):
+    """Cong 2: dong nhat thuc loss tren 8 anh dau."""
+    from src.utils.losses import CombinedLoss
+    from src.losses.total_loss import StaticBoundaryTotalLoss
+    from src.losses.total_loss_affinity_only import AffinityOnlyTotalLoss
     errs = []
     for i in range(min(N_GATE_LOSS_IMAGES, n)):
         x, m = val_ds[i]
@@ -464,7 +501,9 @@ def run_gates_for(label, args, ckpt_path, cfg, device, pos_weight, dump_dir, exp
                        'weights': probe.weights, 'pos_weight': pos_weight}, GATE_LOSS_TOL,
                       'L_total THAT luc train (module repo) vs tong so hang rieng; so hang probe khong nam trong L_total'))
 
-    # ── Cong 3: tuyen tinh gradient ──
+
+def _gate_3(label, probe, val_ds, n, ckpt_path, cfg, device, pos_weight, gates):
+    """Cong 3: tuyen tinh gradient."""
     # Kiem o float64 (ban sao model): muc dich la xac nhan viec TACH so hang dung (khong thieu/trung so
     # hang), khong phai do sai so lam tron. O fp32, tong ~11.6M phan tu theo thu tu backward khac nhau cho
     # sai so tuong doi ~1e-5 — van ghi lai de tham khao, KHONG dung de quyet dinh.
@@ -502,7 +541,10 @@ def run_gates_for(label, args, ckpt_path, cfg, device, pos_weight, dump_dir, exp
                        'n_images': min(N_GATE_LIN_IMAGES, n), 'n_shared_params': probe.n_shared}, GATE_LIN_TOL,
                       'quyet dinh tren float64 (kiem tach so hang); so float32 chi tham khao'))
 
-    # ── Cong 4: dung pham vi cap ──
+
+def _gate_4(info, probe, device, gates):
+    """Cong 4: dung pham vi cap."""
+    from src.losses.boundary_bce import BoundaryHead
     notes, ok = [], True
     has_bh_keys = any(k.startswith('boundary_head.') for k in probe.state_keys)
     if not info['has_bce']:
@@ -532,7 +574,9 @@ def run_gates_for(label, args, ckpt_path, cfg, device, pos_weight, dump_dir, exp
     gates.append(gate(4, 'dung pham vi cap', 'PASS' if ok else 'FAIL',
                       {'pairs': [pair_name(p) for p in probe.pairs]}, None, '; '.join(notes)))
 
-    # ── Cong 5: tat dinh ──
+
+def _gate_5(args, probe, val_ds, n, device, gates):
+    """Cong 5: tat dinh."""
     max_rel = 0.0
     for i in range(min(N_GATE_DET_IMAGES, n)):
         name, gt = load_gt_cached(val_ds, i, args.gt_cache or None)
@@ -558,16 +602,6 @@ def run_gates_for(label, args, ckpt_path, cfg, device, pos_weight, dump_dir, exp
     gates.append(gate(5, 'tat dinh (2 lan, 4 anh)', 'PASS' if max_rel <= GATE_DET_TOL else 'FAIL',
                       {'max_rel_diff': max_rel}, GATE_DET_TOL,
                       'cudnn.deterministic + use_deterministic_algorithms(warn_only); KHONG noi nguong neu FAIL'))
-
-    statuses = [g['status'] for g in gates]
-    overall = 'PASS' if all(s in ('PASS', 'SKIP_DRYRUN') for s in statuses) else 'FAIL'
-    res = {'label': label, 'checkpoint_path': ckpt_path, 'checkpoint_fingerprint': file_fingerprint(ckpt_path),
-           'config': CHECKPOINTS[label]['config'], 'iter': info['iter'], 'seed': info['seed'],
-           'pos_weight': pos_weight, 'dry_run': dry, 'n_images': n, 'device': str(device),
-           'overall': overall, 'gates': sorted(gates, key=lambda g: g['gate']),
-           'note': 'cong 6 (unit test lo) nam o output/spurious_holes/gates_holes.json',
-           'created_at': datetime.datetime.now().isoformat(timespec='seconds'), 'git_commit': get_git_commit()}
-    return res
 
 
 def cmd_gates(args):
@@ -842,6 +876,17 @@ def summarize_label(label, od, n_boot):
     # ── muc dac trung ──
     st = pd.read_csv(os.path.join(od, f'per_image_strata_{label}.csv'))
     nf = pd.read_csv(os.path.join(od, f'null_feat_{label}.csv'))
+    rows += feat_summary_rows(label, st, nf, n_boot)
+    df = pd.DataFrame(rows)
+    df.to_csv(os.path.join(od, f'summary_{label}.csv'), index=False)
+    return df
+
+
+def feat_summary_rows(label, st, nf, n_boot):
+    """Muc dac trung (muc 2.3): cosW gop micro theo tang, CI bootstrap per-image, null hoan vi.
+    st = per_image_strata (image_id, pair, axis, stratum, sum_dot, sum_n1, sum_n2, n_pos, n_support, n_neg);
+    nf = null_feat (pair, axis, stratum, perm_id, image_id, sum_dot_perm). Dung chung Phan A va Phan D."""
+    rows = []
     images = st['image_id'].drop_duplicates().tolist()
     n = len(images)
     counts = _boot_counts(n, n_boot)
@@ -867,9 +912,7 @@ def summarize_label(label, od, n_boot):
         rows.append(_criteria(label, 'feat', pn, ax, sname, obs, *ci, *nl,
                               (nneg / nsup) if nsup else np.nan, math.sqrt(S2 / S1) if S1 > 0 else np.nan,
                               (nsup / npos) if npos else 0.0, n, TAU_FEAT, n_pos=int(npos)))
-    df = pd.DataFrame(rows)
-    df.to_csv(os.path.join(od, f'summary_{label}.csv'), index=False)
-    return df
+    return rows
 
 
 def _criteria(label, level, pair, axis, stratum, value, ci_lo, ci_hi, null_lo, null_hi, frac_neg, mag, cov,
@@ -1205,11 +1248,18 @@ def parse_args(argv=None):
     p.add_argument('--output-dir', default='output/grad_conflict')
     p.add_argument('--holes-dir', default='output/spurious_holes')
     p.add_argument('--n-boot', type=int, default=10000)
+
+    # ── Phan D (docs/S2-spec-phan-D-quy-dao-xung-dot-gradient.md §2.2) — chi THEM, khong doi che do cu ──
+    from Tools import phanD_probe
+    phanD_probe.add_subparsers(sub)
     return ap.parse_args(argv)
 
 
 def main(argv=None):
     args = parse_args(argv)
+    if args.cmd.startswith('phanD-'):
+        from Tools import phanD_probe
+        return phanD_probe.dispatch(args)
     {'gates': cmd_gates, 'measure': cmd_measure, 'summarize': cmd_summarize}[args.cmd](args)
 
 

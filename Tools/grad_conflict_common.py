@@ -120,17 +120,33 @@ MISSING_RUNS = {
     'run4_40k': 'Run 4 (dynamic) — khong co checkpoint (spec cung bo)',
 }
 
+# Nhan probe NGOAI bang CHECKPOINTS (khong tham gia Phan A/B — cac vong lap `for lb in CHECKPOINTS`
+# giu nguyen). Phan D (docs/S2-spec-phan-D-quy-dao-xung-dot-gradient.md): snapshot cua run Static s19 moi.
+PROBE_EXTRA = {
+    'phanD_s19': dict(
+        default_file=None, model_type='static_boundary', config=CFG_STATIC,
+        iter=None, seed=19, w_bce=0.4, w_aff=0.4, has_bce=True, aff_probe=False,
+        pairs=[('bce', 'aff'), ('region', 'aff'), ('region', 'bce')],
+        expected_miou9=None, role_a='Phan D', role_b='-', trained_total='static'),
+}
+PHAND_POS_WEIGHT = 11.0014      # pos_weight run Static s19 goc (S2 §1)
+
+
+def probe_info(label):
+    return CHECKPOINTS[label] if label in CHECKPOINTS else PROBE_EXTRA[label]
+
+
 DECISION_CKPTS = ('static_s19_36k', 'static_s86_36k')   # muc 5.1 dieu kien 5
 FIGURE_CKPT = 'static_s19_36k'                          # muc 2.4
 
 
 def terms_of(label):
-    info = CHECKPOINTS[label]
+    info = probe_info(label)
     return ('region', 'bce', 'aff') if info['has_bce'] else ('region', 'aff')
 
 
 def term_weights(label, overrides=None):
-    info = CHECKPOINTS[label]
+    info = probe_info(label)
     w = {'region': 1.0, 'aff': info['w_aff']}
     if info['has_bce']:
         w['bce'] = info['w_bce']

@@ -89,10 +89,17 @@ from src.losses.boundary_bce import (
     BoundaryHead, EdgeStatsAccumulator, extract_edge_gt, compute_pos_weight,
 )
 from src.losses.total_loss import StaticBoundaryTotalLoss
+from src.utils.phanD_snapshots import (
+    SnapshotSaver, LossLogger, parse_schedule, file_md5, snapshot_path, verify_snapshot_load,
+)
 
 _CLASS_NAMES = ['Background', 'Bareland', 'Rangeland', 'Developed', 'Road',
                 'Tree', 'Water', 'Agriculture', 'Building']
 _TRAIN_CROP_SIZE = 512  # khớp src/data/transforms.py::get_train_transforms() mặc định
+_BARELAND_IDX = _CLASS_NAMES.index('Bareland')
+# --report-ckpts (Phan D, chi dung khi cong D0 FAIL): 4 checkpoint bao cao nhu train_static_boundary_weighted.py
+_REPORT_CKPT_FILES = {'best_miou': 'best_miou.pth', 'best_bfscore': 'best_bfscore.pth',
+                      'best_bareland': 'best_bareland.pth'}
 
 
 # ── Helpers (duplicated on purpose từ train_bce_edge.py — mỗi script
@@ -549,6 +556,59 @@ def write_static_boundary_summary(path: str, *, experiment_name: str, alpha: flo
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
+def _report_after_validation(index, index_path, work_dir, model, iteration, val_round, val_result, is_final):
+    """--report-ckpts (Phan D, chi khi D0 FAIL): sau 1 vong validation (rank 0) luu 4 checkpoint bao cao
+    (raw state_dict, cung quy uoc train_static_boundary_weighted.py) + checkpoint_index.json + 1 hang
+    benchmark_results_ext.csv (bf_precision/bf_recall/asd 2 chieu). Khong dung toi RNG/optimizer."""
+    bnd = val_result['boundary']
+    per_class = val_result['per_class_iou']
+
+    def r4(v):
+        return round(float(v), 4) if v == v else ''
+
+    row = {'round': val_round, 'iter': iteration, 'miou9': round(float(val_result['mIoU']), 4),
+           'miou8': round(float(np.mean(per_class[1:])), 4),
+           **{f'iou_{n}': round(float(v), 4) for n, v in zip(_CLASS_NAMES, per_class)}}
+    for k in ('bf_score', 'bf_precision', 'bf_recall', 'boundary_iou_d1', 'boundary_iou_d2', 'boundary_iou_d4',
+              'asd', 'asd_pred_to_gt', 'asd_gt_to_pred'):
+        row[k] = r4(bnd[k]) if k in bnd else ''
+    for k in ('l_region', 'l_bce', 'l_affinity', 'l_total'):
+        row[k] = round(float(val_result[k]), 4)
+
+    def is_better(key, value):
+        return value == value and value > index.get(key, {}).get('value', -1.0)
+
+    saves = []
+    if is_better('best_miou', float(val_result['mIoU'])):
+        saves.append(('best_miou', float(val_result['mIoU'])))
+    if is_better('best_bfscore', float(bnd.get('bf_score', float('nan')))):
+        saves.append(('best_bfscore', float(bnd['bf_score'])))
+    if is_better('best_bareland', float(per_class[_BARELAND_IDX])):
+        saves.append(('best_bareland', float(per_class[_BARELAND_IDX])))
+    for key, value in saves:
+        fname = _REPORT_CKPT_FILES[key]
+        torch.save(model.module.state_dict(), os.path.join(work_dir, fname))
+        index[key] = {'file': fname, 'iter': iteration, 'round': val_round, 'value': value, 'metrics': dict(row)}
+        log(f"  [report-ckpts] {key}={value:.4f} @ iter {iteration} -> {fname}")
+    if is_final:
+        fname = f'final_iter{iteration}.pth'
+        torch.save(model.module.state_dict(), os.path.join(work_dir, fname))
+        index['final'] = {'file': fname, 'iter': iteration, 'round': val_round, 'metrics': dict(row)}
+        log(f"  [report-ckpts] final -> {fname}")
+    saved_keys = {k for k, _v in saves}
+    row.update({f'is_{k}': k in saved_keys for k in _REPORT_CKPT_FILES})
+    row['is_final'] = bool(is_final)
+    with open(index_path, 'w', encoding='utf-8') as f:
+        json.dump(index, f, indent=2, ensure_ascii=False)
+    ext = os.path.join(work_dir, 'benchmark_results_ext.csv')
+    write_header = not os.path.exists(ext)
+    with open(ext, 'a', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=row.keys())
+        if write_header:
+            w.writeheader()
+        w.writerow(row)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config',  required=True, help='Path to YAML config')
@@ -561,6 +621,19 @@ def main():
     parser.add_argument('--alpha', type=float, default=None,
                         help='Ghi de BOUNDARY_LOSS.ALPHA cua config (vd 0.2) de ablation nhanh — '
                              'khi truyen, WORK_DIR tu them hau to _alphaX.XX de khong de len run mac dinh.')
+    # ── Phan D (docs/S2-spec-phan-D-quy-dao-xung-dot-gradient.md) — MAC DINH TAT ──
+    parser.add_argument('--work-dir', default=None, help='Ghi de OUTPUT.WORK_DIR (uu tien tuyet doi).')
+    parser.add_argument('--save-snapshots', default=None, metavar='default|sparse|t1,t2,...',
+                        help='Phan D §1.1: luu model.module.state_dict() (rank 0) tai cac moc cua lich.')
+    parser.add_argument('--snapshot-dir', default=None, help='Thu muc snapshot (mac dinh <WORK_DIR>/snapshots).')
+    parser.add_argument('--stop-at-iter', type=int, default=None,
+                        help='Dry-run Phan D: dung SAU iter N (khong doi MAX_ITERS/lich LR, khong validation).')
+    parser.add_argument('--loss-log', default=None, help='Dry-run Phan D (D1/D5): CSV loss tung iter cua rank 0.')
+    parser.add_argument('--verify-snapshot-load', default=None, metavar='JSON',
+                        help='Cong D2 (chi khi --stop-at-iter): so trung bit snapshot moc cuoi voi model trong bo nho.')
+    parser.add_argument('--report-ckpts', action='store_true',
+                        help='Phan D (khi D0 FAIL): sau moi vong validation luu them best_miou/best_bfscore/'
+                             'best_bareland/final_iter<N>.pth + checkpoint_index.json + benchmark_results_ext.csv.')
     args = parser.parse_args()
 
     use_cuda = torch.cuda.is_available()
@@ -590,6 +663,8 @@ def main():
         alpha = args.alpha
         bl['ALPHA'] = alpha
         out['WORK_DIR'] = out['WORK_DIR'].rstrip('/') + f'_alpha{alpha:.2f}'
+    if args.work_dir is not None:
+        out['WORK_DIR'] = args.work_dir
 
     ignore_index      = bl.get('IGNORE_INDEX', 255)
     connectivity      = bl.get('CONNECTIVITY', 4)
@@ -847,6 +922,27 @@ def main():
 
     last_l_region = last_l_bce = last_l_affinity = last_l_total = 0.0
 
+    # ── Phan D: snapshot / loss log / 4 checkpoint bao cao (mac dinh tat) ──
+    snap = None
+    if args.save_snapshots:
+        snap_dir = args.snapshot_dir or os.path.join(out['WORK_DIR'], 'snapshots')
+        schedule = parse_schedule(args.save_snapshots)
+        snap = SnapshotSaver(schedule, snap_dir, seed, file_md5(args.config), is_main())
+        log(f"Phan D: luu {len(schedule)} snapshot -> {snap_dir} (lich {args.save_snapshots})")
+        if start_iter == 1:
+            snap.maybe_save(model.module, 0)
+        else:
+            removed = snap.prune_after(start_iter - 1)
+            if removed:
+                log(f"Phan D: resume tu iter {start_iter - 1} — xoa snapshot quy dao cu: {removed}")
+    loss_logger = LossLogger(args.loss_log, is_main()) if args.loss_log else None
+    stopped_at = None
+    report_index_path = os.path.join(out['WORK_DIR'], 'checkpoint_index.json')
+    report_index = {}
+    if args.report_ckpts and is_main() and resume_ckpt is not None and os.path.exists(report_index_path):
+        with open(report_index_path, encoding='utf-8') as f:
+            report_index = json.load(f)
+
     for iteration in range(start_iter, tr['MAX_ITERS'] + 1):
         model.train()
 
@@ -922,12 +1018,21 @@ def main():
         scaler.step(optimizer)
         scaler.update()
 
+        if snap is not None:
+            snap.maybe_save(model.module, iteration)
+        if loss_logger is not None:
+            loss_logger.log(iteration, lr, parts)
+
         last_l_region, last_l_bce = parts['l_region'], parts['l_bce']
         last_l_affinity, last_l_total = parts['l_affinity'], parts['l_total']
 
         if iteration % 100 == 0:
             log(f"[{iteration:>6}/{tr['MAX_ITERS']}] l_region={parts['l_region']:.4f} l_bce={parts['l_bce']:.4f} "
                 f"l_affinity={parts['l_affinity']:.4f} l_total={parts['l_total']:.4f}  lr={lr:.2e}")
+
+        if args.stop_at_iter is not None and iteration >= args.stop_at_iter:
+            stopped_at = iteration
+            break
 
         # ── Validation ───────────────────────────────────────────────────────
         if iteration % tr['VAL_INTERVAL'] == 0 or iteration == tr['MAX_ITERS']:
@@ -1001,6 +1106,11 @@ def main():
 
                 stop_flag = early_stopping.step(miou)
 
+                if args.report_ckpts:
+                    _report_after_validation(report_index, report_index_path, out['WORK_DIR'], model,
+                                             iteration, val_round, val_result,
+                                             stop_flag or iteration == tr['MAX_ITERS'])
+
                 ckpt_path = os.path.join(out['WORK_DIR'], 'latest_checkpoint.pth')
                 save_checkpoint(ckpt_path, model, optimizer, scaler, iteration,
                                 early_stopping, best_miou, best_per_class,
@@ -1014,6 +1124,24 @@ def main():
             if should_stop.item():
                 log(f"Early stopping at iteration {iteration}.")
                 break
+
+    if loss_logger is not None:
+        loss_logger.close()
+    if stopped_at is not None:
+        # Dry-run Phan D: khong validation/summary. Cong D2 neu duoc yeu cau.
+        if args.verify_snapshot_load and is_main():
+            if snap is None:
+                raise SystemExit('--verify-snapshot-load can --save-snapshots')
+            res = verify_snapshot_load(snapshot_path(snap.dir, stopped_at),
+                                       lambda: StaticBoundaryUNetFormer(cfg), model.module)
+            os.makedirs(os.path.dirname(os.path.abspath(args.verify_snapshot_load)) or '.', exist_ok=True)
+            with open(args.verify_snapshot_load, 'w', encoding='utf-8') as f:
+                json.dump(res, f, indent=2, ensure_ascii=False)
+            log(f"Cong D2: {res['status']} ({res['n_mismatched']}/{res['n_tensors']} tensor lech) "
+                f"-> {args.verify_snapshot_load}")
+        log(f"--stop-at-iter: dung sau iter {stopped_at} (pos_weight={pos_weight:.6f}).")
+        dist.destroy_process_group()
+        return
 
     # ── Export artefacts ─────────────────────────────────────────────────────
     if is_main():

@@ -111,6 +111,9 @@ from src.losses.boundary_bce import (
     BoundaryHead, EdgeStatsAccumulator, extract_edge_gt, compute_pos_weight,
 )
 from src.losses.total_loss_weighted import StaticBoundaryTotalLossWeighted
+from src.utils.phanD_snapshots import (
+    SnapshotSaver, LossLogger, parse_schedule, file_md5, snapshot_path, verify_snapshot_load,
+)
 
 _CLASS_NAMES = ['Background', 'Bareland', 'Rangeland', 'Developed', 'Road',
                 'Tree', 'Water', 'Agriculture', 'Building']
@@ -659,6 +662,18 @@ def main():
     parser.add_argument('--work-dir', default=None,
                         help='Ghi de OUTPUT.WORK_DIR cua config truc tiep (uu tien tuyet doi — khi '
                              'truyen, BO QUA moi hau to tu dong _alphaX.XX/_lambda*/_seedN o duoi).')
+    # ── Phan D (docs/S2-spec-phan-D-quy-dao-xung-dot-gradient.md) — MAC DINH TAT ──
+    parser.add_argument('--save-snapshots', default=None, metavar='default|sparse|t1,t2,...',
+                        help='Phan D §1.1: luu model.module.state_dict() (rank 0) tai cac moc cua lich.')
+    parser.add_argument('--snapshot-dir', default=None,
+                        help='Thu muc snapshot (mac dinh <WORK_DIR>/snapshots).')
+    parser.add_argument('--stop-at-iter', type=int, default=None,
+                        help='Dry-run Phan D: dung SAU iter N (khong doi MAX_ITERS/lich LR, khong validation).')
+    parser.add_argument('--loss-log', default=None,
+                        help='Dry-run Phan D (D1/D5): CSV loss tung iter cua rank 0.')
+    parser.add_argument('--verify-snapshot-load', default=None, metavar='JSON',
+                        help='Cong D2 (chi khi --stop-at-iter): sau vong lap, nap snapshot moc cuoi vao model '
+                             'moi, so trung bit voi model trong bo nho, ghi ket qua ra JSON.')
     args = parser.parse_args()
 
     use_cuda = torch.cuda.is_available()
@@ -969,6 +984,22 @@ def main():
 
     last_l_region = last_l_bce = last_l_affinity = last_l_total = 0.0
 
+    # ── Phan D: snapshot / loss log (mac dinh tat — khong truyen co thi y het cu) ──
+    snap = None
+    if args.save_snapshots:
+        snap_dir = args.snapshot_dir or os.path.join(out['WORK_DIR'], 'snapshots')
+        schedule = parse_schedule(args.save_snapshots)
+        snap = SnapshotSaver(schedule, snap_dir, seed, file_md5(args.config), is_main())
+        log(f"Phan D: luu {len(schedule)} snapshot -> {snap_dir} (lich {args.save_snapshots})")
+        if start_iter == 1:
+            snap.maybe_save(model.module, 0)
+        else:
+            removed = snap.prune_after(start_iter - 1)
+            if removed:
+                log(f"Phan D: resume tu iter {start_iter - 1} — xoa snapshot quy dao cu: {removed}")
+    loss_logger = LossLogger(args.loss_log, is_main()) if args.loss_log else None
+    stopped_at = None
+
     for iteration in range(start_iter, tr['MAX_ITERS'] + 1):
         model.train()
 
@@ -1065,6 +1096,11 @@ def main():
         scaler.step(optimizer)
         scaler.update()
 
+        if snap is not None:
+            snap.maybe_save(model.module, iteration)
+        if loss_logger is not None:
+            loss_logger.log(iteration, lr, parts)
+
         last_l_region, last_l_bce = parts['l_region'], parts['l_bce']
         last_l_affinity, last_l_total = parts['l_affinity'], parts['l_total']
 
@@ -1072,6 +1108,10 @@ def main():
             log(f"[{iteration:>6}/{tr['MAX_ITERS']}] l_region={parts['l_region']:.4f} l_bce={parts['l_bce']:.4f} "
                 f"l_affinity={parts['l_affinity']:.4f} l_total={parts['l_total']:.4f}  "
                 f"alpha_affinity_effective={parts['alpha_affinity_effective']:.4f}  lr={lr:.2e}")
+
+        if args.stop_at_iter is not None and iteration >= args.stop_at_iter:
+            stopped_at = iteration
+            break
 
         # ── Validation ───────────────────────────────────────────────────────
         if iteration % tr['VAL_INTERVAL'] == 0 or iteration == tr['MAX_ITERS']:
@@ -1208,6 +1248,24 @@ def main():
             if should_stop.item():
                 log(f"Early stopping at iteration {iteration}.")
                 break
+
+    if loss_logger is not None:
+        loss_logger.close()
+    if stopped_at is not None:
+        # Dry-run Phan D: khong validation/summary. Cong D2 neu duoc yeu cau.
+        if args.verify_snapshot_load and is_main():
+            if snap is None:
+                raise SystemExit('--verify-snapshot-load can --save-snapshots')
+            res = verify_snapshot_load(snapshot_path(snap.dir, stopped_at),
+                                       lambda: StaticBoundaryUNetFormer(cfg), model.module)
+            os.makedirs(os.path.dirname(os.path.abspath(args.verify_snapshot_load)) or '.', exist_ok=True)
+            with open(args.verify_snapshot_load, 'w', encoding='utf-8') as f:
+                json.dump(res, f, indent=2, ensure_ascii=False)
+            log(f"Cong D2: {res['status']} ({res['n_mismatched']}/{res['n_tensors']} tensor lech) "
+                f"-> {args.verify_snapshot_load}")
+        log(f"--stop-at-iter: dung sau iter {stopped_at} (pos_weight={pos_weight:.6f}).")
+        dist.destroy_process_group()
+        return
 
     # ── Export artefacts ─────────────────────────────────────────────────────
     if is_main():
