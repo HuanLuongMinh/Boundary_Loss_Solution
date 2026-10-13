@@ -301,8 +301,8 @@ def test_d0_static():
         'lr': ("power: float = 0.9", "power: float = 0.8"),
         'init_rng': ("    model = StaticBoundaryUNetFormer(cfg).to(device)",
                      "    torch.rand(1)\n    model = StaticBoundaryUNetFormer(cfg).to(device)"),
-        'sampler': ("sampler=train_sampler, num_workers=tr['NUM_WORKERS'],",
-                    "sampler=train_sampler, num_workers=tr['NUM_WORKERS'], worker_init_fn=None,"),
+        'sampler': ("worker_init_fn=augment_worker_init if args.seed_augment else None,",
+                    "worker_init_fn=augment_worker_init,"),
         'posweight_lambda': ("for _ in range(edge_stats_nbatch):", "for _ in range(edge_stats_nbatch + 1):"),
         'validation': ("is_best_miou     = miou9 > best_miou", "is_best_miou     = miou9 >= best_miou"),
     }

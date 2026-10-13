@@ -114,6 +114,32 @@ class LossLogger:
             self.f = None
 
 
+def _transform_of(dataset):
+    while hasattr(dataset, 'dataset') and not hasattr(dataset, 'transform'):   # Subset (dry-run)
+        dataset = dataset.dataset
+    return getattr(dataset, 'transform', None)
+
+
+def augment_worker_init(worker_id):
+    """--seed-augment: albumentations 2.x KHONG dung seed toan cuc (random/np/torch) — moi Compose tu lay
+    entropy cua OS, nen 2 lan chay cung seed van crop/flip khac nhau. Ham nay (worker_init_fn) seed
+    transform cua worker tu torch.initial_seed() — gia tri PyTorch da dat cho worker = base_seed + worker_id,
+    voi base_seed rut tu torch RNG cua tien trinh chinh => tat dinh theo SEED, khac nhau giua worker/epoch.
+    Chinh sach augmentation KHONG doi."""
+    from torch.utils.data import get_worker_info
+    info = get_worker_info()
+    t = _transform_of(info.dataset)
+    if t is not None and hasattr(t, 'set_random_seed'):
+        t.set_random_seed(torch.initial_seed() % (2 ** 32))
+
+
+def seed_augment_main_process(dataset, seed):
+    """--seed-augment voi num_workers=0 (transform chay o tien trinh chinh): seed 1 lan tu SEED."""
+    t = _transform_of(dataset)
+    if t is not None and hasattr(t, 'set_random_seed'):
+        t.set_random_seed(int(seed))
+
+
 def load_snapshot_state(path):
     obj = torch.load(path, map_location='cpu', weights_only=False)
     if isinstance(obj, dict) and 'state_dict' in obj and 'iter' in obj:

@@ -75,10 +75,11 @@ run_500() {
   echo "  -> run $name ($(script_of "$which"), 500 iter) ..."
   local t=$(date +%s)
   torchrun --nproc_per_node=2 --master_port="$port" "$(script_of "$which")" --config "$CFG" --data-root "$DATA" \
+      --pos-weight 11.0014 --seed-augment \
       --work-dir "$wd" --stop-at-iter 500 --loss-log "$wd/loss.csv" "$@" > "$DR/$name.log" 2>&1 \
     || { tail -40 "$DR/$name.log"; die "run $name that bai — xem $DR/$name.log"; }
   [[ -f "$wd/loss.csv" ]] || die "run $name khong ghi loss.csv"
-  ok "$name xong sau $(( $(date +%s) - t ))s — $(grep -o 'pos_weight=[0-9.]*' "$wd/train_log.txt" | tail -1)"
+  ok "$name xong sau $(( $(date +%s) - t ))s — $(grep -o 'pos_weight=[0-9.]*' "$wd/train_log.txt" | tail -1) (ghim; uoc luong $(grep -o 'GHIM .*= [0-9.]*' "$wd/train_log.txt" | grep -o '[0-9.]*$' | tail -1))"
 }
 
 assemble() {
@@ -188,7 +189,7 @@ if has dryrun; then
       echo "  [!]     D0 FAIL -> chuyen sang script goc $O_SCRIPT (+ --report-ckpts); chay them O-b"
       run_500 O-b orig 29514
     else
-      die "D0: pos_weight cua W-a khac 11.0014 — xem $GD/D0.json"
+      die "D0: pos_weight dung de train cua W-a khong phai 11.0014 (thieu --pos-weight?) — xem $GD/D0.json"
     fi
     echo "$TRAIN_WHICH" > "$PD/train_script.txt"
 
@@ -257,6 +258,7 @@ EOF
   t=$(date +%s)
   set +e
   torchrun --nproc_per_node=2 --master_port=29520 "$(script_of "$TRAIN_WHICH")" --config "$CFG" --data-root "$DATA" \
+      --pos-weight 11.0014 --seed-augment \
       --work-dir "$WORK" --save-snapshots "$SCHED" --snapshot-dir "$PD/snapshots" "${EXTRA[@]}" 2>&1 \
       | tee -a "$PD/logs/train_stdout.log" \
       | grep -E --line-buffered 'Val round|New best|Final|Phan D|LOI|Error|Traceback|Early stopping|pos_weight|\[ *[0-9]+000/'

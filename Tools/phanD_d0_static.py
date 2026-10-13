@@ -129,6 +129,17 @@ def _nested(fn, name):
     return next((n for n in ast.walk(fn) if isinstance(n, ast.FunctionDef) and n.name == name), None)
 
 
+def _find_if_test(fn, text):
+    """If (bat ky do sau) co dieu kien chua `text`, vd 'args.pos_weight is not None'."""
+    return next((n for n in ast.walk(fn) if isinstance(n, ast.If) and text in _src(n.test)), None)
+
+
+def _same_if(mo, mw, text, what, note=''):
+    a, b = _find_if_test(mo, text), _find_if_test(mw, text)
+    same = a is not None and b is not None and _norm_dump(a) == _norm_dump(b)
+    return _chk(what, same, f'dong {a.lineno}' if a else '(KHONG CO)', f'dong {b.lineno}' if b else '(KHONG CO)', note)
+
+
 def _find_if_containing(fn, call):
     for n in ast.walk(fn):
         if isinstance(n, ast.If) and any(isinstance(c, ast.Call) and _call_name(c) == call for c in ast.walk(n)):
@@ -234,13 +245,20 @@ def check_sampler(do, dw, mo, mw):
     co, cw = _nested(mo, 'cycle'), _nested(mw, 'cycle')
     dl_o = [s for _n, s in _calls_in(mo, {'DataLoader'})]
     dl_w = [s for _n, s in _calls_in(mw, {'DataLoader'})]
-    no_wif = all('worker_init_fn' not in s and 'generator' not in s for s in dl_o + dl_w)
+    wif_o = [s for s in dl_o if 'worker_init_fn' in s or 'generator' in s]
+    wif_w = [s for s in dl_w if 'worker_init_fn' in s or 'generator' in s]
+    wif_ok = len(wif_o) == len(wif_w) == 1 and all(
+        'worker_init_fn=augment_worker_init if args.seed_augment else None' in s and 'generator' not in s
+        for s in wif_o + wif_w)
     return _item('sampler', 'Sampler / worker seed', [
         _same_calls(mo, mw, {'DistributedSampler'}, 'DistributedSampler (train shuffle=True seed=SEED, val shuffle=False)'),
-        _same_calls(mo, mw, {'DataLoader'}, 'DataLoader (batch, num_workers, pin_memory, drop_last)'),
-        _chk('worker seed', no_wif, 'khong worker_init_fn / generator', 'khong worker_init_fn / generator',
-             'seed worker = base_seed rut tu torch RNG mac dinh moi lan tao iterator -> phu thuoc thu tu RNG '
-             '(muc 2), giong nhau o 2 script'),
+        _same_calls(mo, mw, {'DataLoader'}, 'DataLoader (batch, num_workers, pin_memory, drop_last, worker_init_fn)'),
+        _chk('worker seed', wif_ok, 'train DataLoader: worker_init_fn=augment_worker_init neu --seed-augment',
+             'train DataLoader: worker_init_fn=augment_worker_init neu --seed-augment',
+             'seed torch/random/numpy cua worker = base_seed (rut tu torch RNG luc tao iterator, muc 2) + worker_id. '
+             'albumentations 2.x BO QUA seed toan cuc -> --seed-augment seed transform cua worker tu '
+             'torch.initial_seed() (src/utils/phanD_snapshots.py, dung chung 2 script); khong generator'),
+        _same_if(mo, mw, 'args.seed_augment', 'khoi --seed-augment sau DataLoader (num_workers=0 -> seed o tien trinh chinh)'),
         _chk('ham cycle() (set_epoch(epoch) moi vong)', co is not None and cw is not None and
              _norm_dump(co) == _norm_dump(cw), f'dong {co.lineno if co else "?"}', f'dong {cw.lineno if cw else "?"}'),
     ])
@@ -250,7 +268,10 @@ def check_posweight_lambda(do, dw, mo, mw, cfg, runner_text):
     bo, bw = _find_if_containing(mo, 'EdgeStatsAccumulator'), _find_if_containing(mw, 'EdgeStatsAccumulator')
     bl = cfg.get('BOUNDARY_LOSS', {})
     lam_keys = {k: bl.get(k) for k in ('LAMBDA1_STATIC', 'LAMBDA2_STATIC')}
-    bad_flags = sorted(set(re.findall(r'--(alpha|lambda1|lambda2|seed)\b', runner_text)))
+    bad_flags = sorted(set(re.findall(r'--(alpha|lambda1|lambda2|seed)(?![-\w])', runner_text)))
+    n_runs = len(re.findall(r'torchrun --nproc_per_node', runner_text))
+    n_pw = len(re.findall(r'--pos-weight 11\.0014', runner_text))
+    n_aug = len(re.findall(r'--seed-augment', runner_text))
     checks = [
         _chk('khoi tinh pos_weight (resume / EDGE_STATS_FILE / uoc luong 100 batch/rank + all_reduce)',
              bo is not None and bw is not None and _norm_dump(bo) == _norm_dump(bw),
@@ -265,6 +286,11 @@ def check_posweight_lambda(do, dw, mo, mw, cfg, runner_text):
         _chk('script chay khong ghi de alpha/lambda/seed', not bad_flags, '', '',
              f'{RUNNER}: ' + ('khong co --alpha/--lambda1/--lambda2/--seed' if not bad_flags
                              else f'CO co: {bad_flags}')),
+        _same_if(mo, mw, 'args.pos_weight is not None', 'khoi --pos-weight (ghim sau buoc uoc luong)',
+                 note='uoc luong 100 batch van chay (giu vi tri luong du lieu), chi thay gia tri dung de train'),
+        _chk('script chay ghim pos_weight 11.0014 + --seed-augment o moi lenh train',
+             n_runs > 0 and n_pw >= n_runs and n_aug >= n_runs, '', '',
+             f'{RUNNER}: {n_runs} lenh train, {n_pw} lan --pos-weight 11.0014, {n_aug} lan --seed-augment'),
         _check_loss_numeric(),
     ]
     return _item('posweight_lambda', 'Nguon pos_weight va lambda', checks)

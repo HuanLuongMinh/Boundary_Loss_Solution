@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 LOSS_COLS = ('l_total', 'l_region', 'l_bce', 'l_affinity')
 POS_WEIGHT_REF = 11.0014
-POS_WEIGHT_TOL = 5e-4
+POS_WEIGHT_TOL = 1e-9          # pos_weight GHIM qua --pos-weight -> phai dung 11.0014
 MIOU36_REF, MIOU36_TOL = 0.6540486, 0.0017       # §5
 BUDGET_H = 10.0                                    # D5
 RUN3_TRAIN_H = 3 + 22 / 60                         # Run 3 goc: 40k iter + 10 vong val trong 03h22m
@@ -57,8 +57,21 @@ def max_abs_diff(a, b):
     return m, its
 
 
+def pos_weight_estimated_from_log(path):
+    """Gia tri uoc luong luc chay (chi tham khao) — dong 'Phan D: --pos-weight GHIM ... = X'."""
+    if not path or not os.path.exists(path):
+        return None
+    val = None
+    with open(path, encoding='utf-8', errors='replace') as f:
+        for ln in f:
+            m = re.search(r'--pos-weight GHIM .*= ([0-9.]+)', ln)
+            if m:
+                val = float(m.group(1))
+    return val
+
+
 def pos_weight_from_log(path):
-    """Dong '--stop-at-iter: dung sau iter N (pos_weight=X)' do train script ghi (6 chu so)."""
+    """pos_weight THAT dung de train — dong '--stop-at-iter: dung sau iter N (pos_weight=X)' (6 chu so)."""
     if not path or not os.path.exists(path):
         return None
     val = None
@@ -144,11 +157,13 @@ def cmd_compare(args):
         pw = pos_weight_from_log(args.pos_weight_log)
         pw_ok = pw is not None and abs(pw - POS_WEIGHT_REF) <= POS_WEIGHT_TOL
         res['value'].update({'pos_weight': pw, 'pos_weight_ref': POS_WEIGHT_REF, 'pos_weight_tol': POS_WEIGHT_TOL,
-                             'pos_weight_ok': pw_ok, 'pos_weight_log': args.pos_weight_log})
+                             'pos_weight_ok': pw_ok, 'pos_weight_log': args.pos_weight_log,
+                             'pos_weight_estimated_chi_tham_khao': pos_weight_estimated_from_log(args.pos_weight_log)})
         if not pw_ok:
             res['status'] = 'FAIL'
             res['blocking'] = True
-            res['note'] = f'pos_weight {pw} lech {POS_WEIGHT_REF} qua {POS_WEIGHT_TOL} — nghi splits/du lieu da doi'
+            res['note'] = (f'pos_weight dung de train = {pw}, khong phai {POS_WEIGHT_REF} — kiem co --pos-weight '
+                           f'trong lenh chay')
     write_json(res, args.out)
     print(f"  cong {args.gate}: {res['status']}  max|B-A|={noise:.3g}  max|C-A|={dev:.3g}"
           + (f"  pos_weight={res['value'].get('pos_weight')}" if args.pos_weight_log else ''))

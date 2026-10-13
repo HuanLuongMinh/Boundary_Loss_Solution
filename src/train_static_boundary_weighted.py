@@ -113,6 +113,7 @@ from src.losses.boundary_bce import (
 from src.losses.total_loss_weighted import StaticBoundaryTotalLossWeighted
 from src.utils.phanD_snapshots import (
     SnapshotSaver, LossLogger, parse_schedule, file_md5, snapshot_path, verify_snapshot_load,
+    augment_worker_init, seed_augment_main_process,
 )
 
 _CLASS_NAMES = ['Background', 'Bareland', 'Rangeland', 'Developed', 'Road',
@@ -671,6 +672,12 @@ def main():
                         help='Dry-run Phan D: dung SAU iter N (khong doi MAX_ITERS/lich LR, khong validation).')
     parser.add_argument('--loss-log', default=None,
                         help='Dry-run Phan D (D1/D5): CSV loss tung iter cua rank 0.')
+    parser.add_argument('--pos-weight', type=float, default=None,
+                        help='Phan D: GHIM pos_weight (vd 11.0014 = run Static s19 goc). Van chay buoc uoc '
+                             'luong 100 batch nhu cu (giu vi tri luong du lieu) va log gia tri uoc luong.')
+    parser.add_argument('--seed-augment', action='store_true',
+                        help='Phan D: seed augmentation (albumentations 2.x bo qua seed toan cuc) qua '
+                             'worker_init_fn -> 2 lan chay cung SEED cho cung crop/flip.')
     parser.add_argument('--verify-snapshot-load', default=None, metavar='JSON',
                         help='Cong D2 (chi khi --stop-at-iter): sau vong lap, nap snapshot moc cuoi vao model '
                              'moi, so trung bit voi model trong bo nho, ghi ket qua ra JSON.')
@@ -804,7 +811,12 @@ def main():
         train_ds, batch_size=tr['BATCH_SIZE_PER_GPU'],
         sampler=train_sampler, num_workers=tr['NUM_WORKERS'],
         pin_memory=True, drop_last=True,
+        worker_init_fn=augment_worker_init if args.seed_augment else None,
     )
+    if args.seed_augment:
+        if tr['NUM_WORKERS'] == 0:
+            seed_augment_main_process(train_ds, seed)
+        log(f"Phan D: --seed-augment — augmentation tat dinh theo SEED={seed}")
     val_loader = DataLoader(
         val_ds, batch_size=tr['BATCH_SIZE_PER_GPU'],
         sampler=val_sampler, num_workers=tr['NUM_WORKERS'],
@@ -894,6 +906,12 @@ def main():
             f"(N_valid={edge_stats['N_valid']:.0f} N_edge={edge_stats['N_edge']:.0f})")
 
     pos_weight = edge_stats['pos_weight']
+    if args.pos_weight is not None:
+        log(f"Phan D: --pos-weight GHIM {args.pos_weight} (gia tri {edge_stats_source.split(' ')[0]} = "
+            f"{pos_weight:.6f}, chi ghi log)")
+        edge_stats = dict(edge_stats, pos_weight_estimated=pos_weight, pos_weight=float(args.pos_weight))
+        edge_stats_source = f"--pos-weight {args.pos_weight} (ghim; uoc luong luc chay = {pos_weight:.6f})"
+        pos_weight = float(args.pos_weight)
 
     # Gate cứng (mọi rank tự kiểm/raise — KHÔNG gate is_main() ở đây, để
     # tránh treo collective op phía sau nếu 1 rank raise mà rank khác không).

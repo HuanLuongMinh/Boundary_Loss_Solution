@@ -78,12 +78,18 @@ Có thể thêm tuỳ chọn vào cuối dòng ở Cell 2:
 
 ## 2. Dry-run: các cổng chặn
 
+**Hai cờ cố định cho mọi lệnh train** (dry-run và Phiên 1), cả hai đều mặc định OFF trong script train:
+
+- `--seed-augment`: albumentations 2.x **bỏ qua** seed toàn cục (`random`, `np.random`, `torch.manual_seed`). Vì vậy hai lần chạy cùng seed 19 vẫn crop/flip khác nhau; lần chạy Kaggle đầu tiên cho thấy W-a và W-b lệch tới 0.69. Cờ này seed transform của từng worker DataLoader từ `torch.initial_seed()` của worker đó. Kết quả là cùng SEED thì ra cùng augmentation. Chính sách augmentation không đổi. Run Static s19 gốc **không** có cờ này, nên run Phần D vẫn là một run s19 mới, đúng như spec §5 đã lưu ý.
+- `--pos-weight 11.0014`: ghim pos_weight bằng giá trị của run gốc (spec §1). Bước ước lượng 100 batch vẫn chạy như cũ để giữ nguyên vị trí luồng dữ liệu. Giá trị ước lượng chỉ được ghi log (`Phan D: --pos-weight GHIM ...`) và lưu vào `gates/D0.json` để tham khảo.
+
+
 Chỉ cần một cổng FAIL là script dừng **trước** Phiên 1, nên không tốn quota cho lần train 3,5 giờ.
 
 | Cổng | Kiểm gì | Ngưỡng | File |
 |---|---|---|---|
 | **R0** | Bản mở rộng `grad_conflict_probe.py` không làm đổi kết quả chế độ cũ. Chạy `measure`+`summarize` trên `static_s19_36k`, 4 ảnh val, bằng code commit `8d52089` và bằng code mới | sai khác ≤ 1e-6 × biên độ cột, ở mọi cột của mọi CSV | `gates/R0.json` |
-| **D0** | Chọn script train. (1) **Phần tĩnh** (`Tools/phanD_d0_static.py`, kiểm tự động trên AST của chính code sẽ chạy): ① lịch LR + optimizer + AMP; ② thứ tự khởi tạo model / RNG; ③ sampler / worker seed; ④ nguồn pos_weight và λ (kèm tính `l_total` thật ra trùng bit); ⑤ lịch validation / chọn checkpoint. Kết quả từng mục nằm trong `d0_script_diff.md` và `d0_static.json`. (2) **Thực nghiệm** 500 iter, seed 19: W-a, W-b (weighted), O-a (gốc) | Phần tĩnh: cả 5 mục GIỐNG. Thực nghiệm: **loss iter 1 của W-a và O-a trùng bit** (4 số hạng); `max\|W-a − O-a\| ≤ max\|W-b − W-a\|` (nếu W-a ≡ W-b thì yêu cầu W-a ≡ O-a); pos_weight = 11.0014 ± 5e-4 | `gates/D0.json` |
+| **D0** | Chọn script train. (1) **Phần tĩnh** (`Tools/phanD_d0_static.py`, kiểm tự động trên AST của chính code sẽ chạy): ① lịch LR + optimizer + AMP; ② thứ tự khởi tạo model / RNG; ③ sampler / worker seed; ④ nguồn pos_weight và λ (kèm tính `l_total` thật ra trùng bit); ⑤ lịch validation / chọn checkpoint. Kết quả từng mục nằm trong `d0_script_diff.md` và `d0_static.json`. (2) **Thực nghiệm** 500 iter, seed 19: W-a, W-b (weighted), O-a (gốc) | Phần tĩnh: cả 5 mục GIỐNG. Thực nghiệm: **loss iter 1 của W-a và O-a trùng bit** (4 số hạng); `max\|W-a − O-a\| ≤ max\|W-b − W-a\|` (nếu W-a ≡ W-b thì yêu cầu W-a ≡ O-a); pos_weight **dùng để train** = 11.0014 (đã ghim) | `gates/D0.json` |
 | **D1** | Lưu snapshot không làm đổi quá trình train (run ON lưu ở 0/250/500) | `max\|ON − OFF-a\| ≤ max\|OFF-b − OFF-a\|`. Nếu OFF-a ≡ OFF-b thì yêu cầu ON ≡ OFF-a | `gates/D1.json` |
 | **D2** | Nạp `iter_500.pth` vào model mới, so với model trong bộ nhớ của run ON | trùng bit với mọi tham số và buffer | `gates/D2.json` |
 | **D3** | `cos_all` tính từ Gram bằng cos tính trực tiếp; Gram tính tăng dần bằng Gram tính đầy đủ | < 1e-6 | `gates/D3.json` |
@@ -153,7 +159,8 @@ python Tools/phanD_traj.py --output-dir output/phanD --gates-json output/phanD/g
 | `summary_static_s19.txt khong co pos_weight 11.0014` | Đặt nhầm file summary | Đổi tên đúng file như bước 0.3 của hướng dẫn Bước 1 |
 | `khong tao duoc worktree commit 8d52089` | Clone shallow | Clone lại, không dùng `--depth` |
 | `R0 FAIL` | Bản mở rộng probe đã làm đổi kết quả chế độ cũ | **Không chạy tiếp.** Gửi `gates/R0.json` |
-| `D0: pos_weight cua W-a khac 11.0014` | Splits hoặc dataset khác lúc train gốc | Kiểm lại dataset đã Add Input. Gửi `gates/D0.json` + `dryrun/W-a/train_log.txt` |
+| `D0: pos_weight dung de train cua W-a khong phai 11.0014` | Lệnh train thiếu `--pos-weight 11.0014` (code cũ?) | Clone lại code mới nhất. Gửi `gates/D0.json` + `dryrun/W-a/train_log.txt` |
+| `D0 FAIL` vì loss iter 1 không trùng | Forward trên GPU không tất định, hoặc augmentation chưa được seed | Xem `gates/D0.json` → `value.iter1.A_equals_B`. Nếu W-a ≠ W-b ngay ở iter 1 thì nguyên nhân nằm ở GPU, không phải ở script. Script tự chuyển sang script gốc. Gửi file JSON để quyết định |
 | `D1 FAIL` | Lưu snapshot làm đổi quá trình train | **Không nới ngưỡng.** Gửi `gates/D1.json` |
 | `D2 FAIL` | Snapshot nạp lại khác trọng số trong bộ nhớ | Gửi `gates/D2.json` |
 | `D3 FAIL` | Gram sai | Gửi `gates/D3.json` + `dryrun/d3.log` |
