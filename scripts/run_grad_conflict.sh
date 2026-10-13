@@ -110,6 +110,7 @@ ckpt_args() {   # in ra mang tham so --ckpt/--dump-dir/--pos-weight cho cac nhan
     [[ -n "${DUMP[$lb]:-}" ]] && ARGS+=(--dump-dir "$lb=${DUMP[$lb]}")
     [[ -n "${POSW[$lb]:-}" ]] && ARGS+=(--pos-weight "$lb=${POSW[$lb]}")
   done
+  return 0   # nhan cuoi khong co pos_weight -> [[ ]] tra 1 -> set -e thoat im lang
 }
 
 mask_dir() {    # <dump>/masks neu co, nguoc lai chinh <dump>
