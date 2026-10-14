@@ -124,10 +124,17 @@ class Probe:
         self.shared_params = [p for _n, p in self.shared]
         self.n_shared = sum(p.numel() for p in self.shared_params)
         self._F = None
-        self.base.frh.register_forward_hook(self._hook)
+        self._hook_handle = self.base.frh.register_forward_hook(self._hook)
 
     def _hook(self, _m, _i, out):
         self._F = out
+
+    def close(self):
+        """Giai phong khi do NHIEU checkpoint trong 1 tien trinh (Phan D): hook (bound method) tao vong tham
+        chieu probe -> model -> hook -> probe va `_F` giu do thi autograd cua anh cuoi — khong close thi moi
+        Probe cu giu ~1.4 GB GPU toi khi GC chay. Khong anh huong ket qua do."""
+        self._hook_handle.remove()
+        self._F = None
 
     def forward(self, x):
         self._F = None

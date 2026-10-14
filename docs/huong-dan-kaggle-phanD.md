@@ -150,6 +150,40 @@ Tính lại thống kê trên CPU mà không cần GPU (ví dụ trên máy bạ
 python Tools/phanD_traj.py --output-dir output/phanD --gates-json output/phanD/gates_dryrun.json
 ```
 
+## 6. Chạy Phiên 2 độc lập (Phiên 1 đã xong ở version trước)
+
+Dùng khi Phiên 1 (train + snapshot) đã chạy xong nhưng Phiên 2 (đo) bị lỗi hoặc bị ngắt. Script này **không train lại** và **không cần dataset checkpoint**.
+
+1. Tạo notebook mới (hoặc version mới), chọn **GPU T4 x2**, Internet On.
+2. **Add Input:**
+   - dataset OpenEarthMap;
+   - **output của version đã chạy Phiên 1** (Your Work → Notebooks → version đó). Có thể thay bằng một Kaggle Dataset chứa thư mục `phanD/` có `snapshots/` và `probe_ids.txt`.
+3. Hai cell:
+   ```bash
+   !cd /kaggle/working && rm -rf Boundary_Loss_Solution && git clone https://github.com/HuanLuongMinh/Boundary_Loss_Solution.git
+   !bash /kaggle/working/Boundary_Loss_Solution/scripts/kaggle_phanD_phien2.sh
+   ```
+4. **Save & Run All (Commit).** Thời gian khoảng 40–75 phút.
+
+Script tự làm các việc sau:
+- tìm `phanD/probe_ids.txt`, thư mục `snapshots/` (bắt buộc có `iter_36000.pth`) và dataset;
+- chép các kết quả nhỏ của Phiên 1 (`gates_dryrun.json`, `meta.json`, `post/`, `logs/`, và `gram/ feat/ done/` nếu đã đo dở) vào `output/phanD/`;
+- đọc snapshot **ngay tại chỗ**, không chép 1,7 GB;
+- kiểm dung lượng đĩa cho memmap (khoảng 4,6 GB mỗi GPU);
+- đo các snapshot còn thiếu, rồi tổng hợp bảng 6.3.
+
+Dòng cuối khi thành công: `==> PHAN D — PHIEN 2: XONG ... Verdict: ...`
+
+Tuỳ chọn:
+
+| Tuỳ chọn | Khi nào dùng |
+|---|---|
+| `--summarize-only` | Đã đo đủ snapshot, chỉ cần tổng hợp lại |
+| `--prev DIR`, `--snapshot-dir DIR` | Script không tự tìm được đúng thư mục |
+| `SCRATCH=/duong/dan` (đặt trước `bash`) | `/tmp` không đủ chỗ cho memmap |
+
+**Nếu bước đo lỗi:** script in 40 dòng cuối của `logs/measure_cuda0.log`, `logs/measure_cuda1.log` và `measure_errors.txt`, trong đó có traceback của từng snapshot lỗi. Các snapshot đã đo xong **được giữ lại**. Sửa lỗi xong thì chạy lại script với Add Input là output mới nhất; nó chỉ đo phần còn thiếu.
+
 ## Phụ lục — Lỗi thường gặp
 
 | Hiện tượng | Nguyên nhân | Cách xử lý |
@@ -170,3 +204,7 @@ python Tools/phanD_traj.py --output-dir output/phanD --gates-json output/phanD/g
 | `CUDA out of memory` ở D4 | Cổng 3 chạy float64 | Gửi log |
 | `No space left on device` | `/tmp` đầy (memmap khoảng 4,5 GB/snapshot/GPU) | Gửi log |
 | Bị ngắt (hết 12 giờ, mất kết nối) | — | Mục 4 (`--resume`) |
+| `tail: option used in invalid context -- 2` (code cũ) | Lỗi của chính script khi in log đo: `tail -20` không nhận nhiều file. Lỗi gốc của bước đo vẫn nằm trong `logs/measure_cuda*.log` | Đã sửa. Chạy Phiên 2 độc lập (mục 6) |
+| `CUDA out of memory` ở bước đo, sau khoảng 9 snapshot (code cũ) | Mỗi snapshot rò khoảng 1,4 GB GPU: Probe cũ không được giải phóng | Đã sửa (`Probe.close()`). Log mỗi snapshot giờ in `GPU dinh ... con giu ...`; mức "con giu" phải đứng yên giữa các snapshot |
+| `khong du dia cho memmap` | `/tmp` còn dưới khoảng 5 GB mỗi GPU | Đặt `SCRATCH=<thư mục khác>` (mục 6) |
+| `do snapshot chua xong: N/35` | Có snapshot bị lỗi khi đo | Xem traceback trong `measure_errors.txt` và log được in ra. Gửi các file đó. Chạy lại mục 6 để đo tiếp |

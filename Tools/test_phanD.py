@@ -459,6 +459,45 @@ def test_e2e():
     print("PASS\n")
 
 
+def test_probe_release():
+    print("=== Test 11 (e2e): Probe duoc giai phong ngay (khong cho GC) — chong ro bo nho GPU giua snapshot ===")
+    import gc
+    import weakref
+    import yaml
+    from Tools.test_grad_conflict_probe import _FakeValDS
+    from Tools.eval_boundary_metrics import build_eval_model
+    from Tools.grad_conflict_common import CFG_STATIC
+    from Tools.grad_conflict_probe import Probe
+    tmp = tempfile.mkdtemp()
+    try:
+        cfg = yaml.safe_load(open(CFG_STATIC, encoding='utf-8'))
+        torch.manual_seed(0)
+        path = os.path.join(tmp, 'iter_0.pth')
+        torch.save({'state_dict': build_eval_model(cfg, 'static_boundary').state_dict(), 'iter': 0, 'seed': 19,
+                    'config_md5': 'x'}, path)
+        x, m = _FakeValDS(n=1)[0]
+
+        def run(close):
+            p = Probe('phanD_s19', path, cfg, torch.device('cpu'), 11.0014)
+            p.image_grads(x[None], m[None], 0, need_theta=False)
+            ref = weakref.ref(p.model)
+            if close:
+                p.close()
+            del p
+            return ref
+
+        gc.disable()
+        try:
+            assert run(close=False)() is not None, 'ky vong: khong close -> vong tham chieu giu model'
+            assert run(close=True)() is None, 'close() phai giai phong model ngay, khong can GC'
+        finally:
+            gc.enable()
+            gc.collect()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    print("PASS\n")
+
+
 def snp_list(d):
     return pp.list_snapshots(d)
 
@@ -476,6 +515,7 @@ if __name__ == '__main__':
     test_d0_iter1_and_static()
     test_traj_main()
     if '--e2e' in sys.argv:
+        test_probe_release()
         test_e2e()
     else:
         print("(bo qua e2e — them --e2e de chay measure_snapshot that tren du lieu gia lap)")

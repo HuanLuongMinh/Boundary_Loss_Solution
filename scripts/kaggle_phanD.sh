@@ -27,6 +27,7 @@
 #   --stages "a b ..."   chi chay cac stage nay (vd --stages "measure summarize")
 
 source "$(dirname "${BASH_SOURCE[0]}")/kaggle_common.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/phanD_phien2_core.sh"
 
 die() { echo; echo "  [LOI]   $*" >&2; echo "==> DUNG. Xem docs/huong-dan-kaggle-phanD.md (Phu luc — loi thuong gap)" >&2; exit 1; }
 
@@ -77,9 +78,9 @@ run_500() {
   torchrun --nproc_per_node=2 --master_port="$port" "$(script_of "$which")" --config "$CFG" --data-root "$DATA" \
       --pos-weight 11.0014 --seed-augment \
       --work-dir "$wd" --stop-at-iter 500 --loss-log "$wd/loss.csv" "$@" > "$DR/$name.log" 2>&1 \
-    || { tail -40 "$DR/$name.log"; die "run $name that bai — xem $DR/$name.log"; }
+    || { tail -n 40 "$DR/$name.log"; die "run $name that bai — xem $DR/$name.log"; }
   [[ -f "$wd/loss.csv" ]] || die "run $name khong ghi loss.csv"
-  ok "$name xong sau $(( $(date +%s) - t ))s — $(grep -o 'pos_weight=[0-9.]*' "$wd/train_log.txt" | tail -1) (ghim; uoc luong $(grep -o 'GHIM .*= [0-9.]*' "$wd/train_log.txt" | grep -o '[0-9.]*$' | tail -1))"
+  ok "$name xong sau $(( $(date +%s) - t ))s — $(grep -o 'pos_weight=[0-9.]*' "$wd/train_log.txt" | tail -n 1) (ghim; uoc luong $(grep -o 'GHIM .*= [0-9.]*' "$wd/train_log.txt" | grep -o '[0-9.]*$' | tail -n 1))"
 }
 
 assemble() {
@@ -161,7 +162,7 @@ if has dryrun; then
           --scratch-dir "$SCRATCH/r0_$side" \
         && python Tools/grad_conflict_probe.py summarize --output-dir "$DR/r0_$side" \
           --holes-dir "$DR/r0_$side/_noholes" --n-boot 2000 ) > "$DR/r0_$side.log" 2>&1 \
-        || { tail -30 "$DR/r0_$side.log"; die "R0: chay probe ($side) that bai — xem $DR/r0_$side.log"; }
+        || { tail -n 30 "$DR/r0_$side.log"; die "R0: chay probe ($side) that bai — xem $DR/r0_$side.log"; }
     done
     rm -f "$DR"/r0_*/run_log.txt
     python Tools/phanD_dryrun.py regress --old "$DR/r0_old" --new "$DR/r0_new" --out "$GD/R0.json" \
@@ -207,13 +208,13 @@ if has dryrun; then
     python Tools/grad_conflict_probe.py phanD-gates --gate d3 --snapshot "$DR/ON/snapshots/iter_500.pth" \
         --data-root "$DATA" --image-list "$PD/probe_ids.txt" --output-dir "$DR/d3" --device cuda:0 \
         --scratch-dir "$SCRATCH" --json-out "$GD/D3.json" > "$DR/d3.log" 2>&1 \
-      || { tail -30 "$DR/d3.log"; die "D3 FAIL — xem $GD/D3.json / $DR/d3.log"; }
+      || { tail -n 30 "$DR/d3.log"; die "D3 FAIL — xem $GD/D3.json / $DR/d3.log"; }
     ok "D3 PASS — $(python -c "import json; v=json.load(open('$GD/D3.json'))['value']; print(f\"{v['s_per_snapshot']:.0f} s/snapshot, {v['s_per_image']:.2f} s/anh, P={v['n_shared_params']}\")")"
 
     step "[D4] Cong 2/3/5 cua S1 tren 4 anh do (train), iter_500.pth"
     python Tools/grad_conflict_probe.py phanD-gates --gate d4 --snapshot "$DR/ON/snapshots/iter_500.pth" \
         --data-root "$DATA" --image-list "$PD/probe_ids.txt" --output-dir "$DR/d4" --device cuda:0 \
-        --json-out "$GD/D4.json" > "$DR/d4.log" 2>&1 || { tail -30 "$DR/d4.log"; die "D4 FAIL — xem $GD/D4.json"; }
+        --json-out "$GD/D4.json" > "$DR/d4.log" 2>&1 || { tail -n 30 "$DR/d4.log"; die "D4 FAIL — xem $GD/D4.json"; }
     ok "D4 PASS"
 
     step "[D5] Thoi gian"
@@ -264,7 +265,7 @@ EOF
       | grep -E --line-buffered 'Val round|New best|Final|Phan D|LOI|Error|Traceback|Early stopping|pos_weight|\[ *[0-9]+000/'
   rc=${PIPESTATUS[0]}
   set -e
-  [[ $rc -eq 0 ]] || { tail -40 "$PD/logs/train_stdout.log"; die "train that bai (ma $rc) — xem $PD/logs/train_stdout.log"; }
+  [[ $rc -eq 0 ]] || { tail -n 40 "$PD/logs/train_stdout.log"; die "train that bai (ma $rc) — xem $PD/logs/train_stdout.log"; }
   ok "train xong sau $(( ($(date +%s) - t) / 60 )) phut"
 
   step "Kiem output phien 1"
@@ -315,39 +316,17 @@ EOF
   [[ -n "$EXP" ]] || die "khong thay vong validation 36000 trong $BENCH"
   python Tools/grad_conflict_probe.py phanD-gates --gate d6 --snapshot "$PD/snapshots/iter_36000.pth" \
       --data-root "$DATA" --expected-miou "$EXP" --output-dir "$PD/post" --device cuda:0 --no-fail-exit \
-      --json-out "$PD/post/D6.json" > "$PD/logs/d6.log" 2>&1 || { tail -30 "$PD/logs/d6.log"; die "D6 khong chay duoc"; }
+      --json-out "$PD/post/D6.json" > "$PD/logs/d6.log" 2>&1 || { tail -n 30 "$PD/logs/d6.log"; die "D6 khong chay duoc"; }
   python Tools/phanD_dryrun.py post --bench-csv "$BENCH" --ext-csv "$WORK/benchmark_results_ext.csv" \
       --d6-json "$PD/post/D6.json" --out "$PD/post/post.json"
   assemble "$PD/post/post.json" > /dev/null || true
 fi
 
-# ══════════════════════════════════ measure (Phien 2) ════════════════════════
-if has measure; then
-  NS=$(ls "$PD/snapshots"/iter_*.pth 2>/dev/null | wc -l)
-  [[ "$NS" -gt 0 ]] || die "khong co snapshot trong $PD/snapshots"
-  step "PHIEN 2 — do $NS snapshot x 32 anh tren 2 GPU song song"
-  t=$(date +%s)
-  pids=()
-  for k in 0 1; do
-    python Tools/grad_conflict_probe.py phanD-measure --snapshot-dir "$PD/snapshots" --shard "$k/2" \
-        --data-root "$DATA" --image-list "$PD/probe_ids.txt" --output-dir "$PD" --device "cuda:$k" \
-        --scratch-dir "$SCRATCH/m$k" > "$PD/logs/measure_cuda$k.log" 2>&1 &
-    pids+=($!)
-  done
-  fail=0
-  for p in "${pids[@]}"; do wait "$p" || fail=1; done
-  [[ $fail -eq 0 ]] || { tail -20 "$PD"/logs/measure_cuda*.log; die "do snapshot that bai — xem $PD/logs/measure_cuda*.log"; }
-  ND=$(ls "$PD/done"/iter_*.json 2>/dev/null | wc -l)
-  [[ "$ND" -eq "$NS" ]] || die "moi do $ND/$NS snapshot"
-  ok "do xong $ND snapshot sau $(( ($(date +%s) - t) / 60 )) phut"
-fi
-
-# ══════════════════════════════════ summarize ════════════════════════════════
-if has summarize; then
-  step "Tong hop quy dao + bang 6.3"
-  python Tools/phanD_traj.py --output-dir "$PD" --gates-json "$PD/gates_dryrun.json" || die "tong hop that bai"
-  echo; sed -n '1,30p' "$PD/summary_phanD.md"
-fi
+# ══════════════════════════════════ measure (Phien 2) + summarize ════════════
+# Logic dung chung voi scripts/kaggle_phanD_phien2.sh (chay Phien 2 doc lap)
+SNAP_DIR="$PD/snapshots"
+has measure && phanD_measure
+has summarize && phanD_summarize
 
 echo
 VERD=$(python -c "import json; d=json.load(open('$PD/summary_phanD.json')); print(d['decision']['verdict'], '| dien giai duoc:', d.get('interpretable'))" 2>/dev/null || echo "(chua tong hop)")

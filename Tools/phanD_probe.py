@@ -88,12 +88,33 @@ def list_snapshots(snapshot_dir):
 # ═════════════════════════════════ do 1 snapshot ══════════════════════════════
 
 def measure_snapshot(t, path, args, cfg, device, pos_weight, ds, image_ids, keep_memmap=False):
-    """Do 1 snapshot. Tra ve dict thong tin (+ 'memmap_path' neu keep_memmap)."""
-    from Tools.grad_conflict_probe import Probe, ImageStrata, feature_pair_stats, gram_from_memmap, batch_partition
+    """Do 1 snapshot. Tra ve dict thong tin (+ 'memmap_path' neu keep_memmap).
+    Probe (model + hook + do thi cua anh cuoi) LUON duoc giai phong khi ra khoi ham — do 35 snapshot trong
+    1 tien trinh khong duoc tich luy bo nho GPU (lan chay Kaggle dau OOM o snapshot thu 10 vi ro ~1.4 GB/snapshot)."""
+    import gc
+    from Tools.grad_conflict_probe import Probe
+    if device.type == 'cuda':
+        torch.cuda.reset_peak_memory_stats(device)
+    probe = Probe(LABEL, path, cfg, device, pos_weight)
+    try:
+        res = _measure_with_probe(probe, t, args, device, ds, image_ids, keep_memmap)
+    finally:
+        probe.close()
+        del probe
+        gc.collect()
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
+    if device.type == 'cuda':
+        res['gpu_peak_mem_gb'] = torch.cuda.max_memory_allocated(device) / 2 ** 30
+        res['gpu_mem_after_gb'] = torch.cuda.memory_allocated(device) / 2 ** 30
+    return res
+
+
+def _measure_with_probe(probe, t, args, device, ds, image_ids, keep_memmap):
+    from Tools.grad_conflict_probe import ImageStrata, feature_pair_stats, gram_from_memmap, batch_partition
     od = args.output_dir
     for sub in ('gram', 'feat', 'done'):
         os.makedirs(os.path.join(od, sub), exist_ok=True)
-    probe = Probe(LABEL, path, cfg, device, pos_weight)
     n = len(image_ids)
     terms = list(probe.terms)
     nt, P = len(terms), probe.n_shared
@@ -220,16 +241,36 @@ def cmd_measure(args):
     k, nshard = (int(x) for x in args.shard.split('/'))
     mine = [s for j, s in enumerate(snaps) if j % nshard == k]
     log_path = os.path.join(args.output_dir, 'run_log.txt')
-    print(f"Phan D measure: {len(mine)}/{len(snaps)} snapshot (shard {args.shard}) tren {device}")
+    err_path = os.path.join(args.output_dir, 'measure_errors.txt')
+    print(f"Phan D measure: {len(mine)}/{len(snaps)} snapshot (shard {args.shard}) tren {device}", flush=True)
+    failed = []
     for t, path in mine:
         done_path = os.path.join(args.output_dir, 'done', f'iter_{t}.json')
         fp = file_fingerprint(path)
         if os.path.exists(done_path) and not args.force:
             d = read_json(done_path)
             if d.get('snapshot_fingerprint') == fp and d.get('n_perm') == args.n_perm:
-                print(f"[iter {t}] da do xong — bo qua")
+                print(f"[iter {t}] da do xong — bo qua", flush=True)
                 continue
-        res = measure_snapshot(t, path, args, cfg, device, args.pos_weight, ds, ids)
+        try:
+            res = measure_snapshot(t, path, args, cfg, device, args.pos_weight, ds, ids)
+        except Exception:
+            # 1 snapshot loi khong lam mat cac snapshot khac: ghi traceback, do tiep, bao loi o cuoi.
+            import traceback
+            tb = traceback.format_exc()
+            print(tb, flush=True)
+            append_log(err_path, f"===== [{datetime.datetime.now().isoformat(timespec='seconds')}] shard "
+                                 f"{args.shard} {device} iter {t} ({path})\n{tb}")
+            failed.append(t)
+            for f in os.listdir(args.scratch_dir) if os.path.isdir(args.scratch_dir) else []:
+                if f.startswith(f'phanD_a_iter{t}_'):
+                    try:
+                        os.remove(os.path.join(args.scratch_dir, f))
+                    except OSError:
+                        pass
+            if device.type == 'cuda':
+                torch.cuda.empty_cache()
+            continue
         done = {'label': LABEL, 'snapshot': path, 'snapshot_fingerprint': fp, 'pos_weight': args.pos_weight,
                 'image_list': args.image_list, 'split': args.split, 'n_perm': args.n_perm, 'device': str(device),
                 'gpu': torch.cuda.get_device_name(device) if device.type == 'cuda' else None,
@@ -238,7 +279,11 @@ def cmd_measure(args):
                 'created_at': datetime.datetime.now().isoformat(timespec='seconds'), **res}
         write_json(done, done_path)
         append_log(log_path, f"[{done['created_at']}] measure iter {t}: {res['wall_time_s']:.0f}s gpu={done['gpu']}")
-        print(f"[iter {t}] xong trong {res['wall_time_s']:.0f}s")
+        mem = (f", GPU dinh {res['gpu_peak_mem_gb']:.2f} GB, con giu {res['gpu_mem_after_gb']:.2f} GB"
+               if 'gpu_peak_mem_gb' in res else '')
+        print(f"[iter {t}] xong trong {res['wall_time_s']:.0f}s{mem}", flush=True)
+    if failed:
+        raise SystemExit(f"[LOI] shard {args.shard}: {len(failed)} snapshot loi {failed} — traceback trong {err_path}")
 
 
 def gate_d3(G, terms, direct_pairs, direct_vals, mm_path, shape):
