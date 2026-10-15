@@ -76,7 +76,9 @@ def compute_per_image_stats(logits: torch.Tensor, targets: torch.Tensor,
         # ---- Khoi Boundary IoU — per-class, per-distance (muc 2.2) ----
         # Cung thuat toan voi BoundaryMetrics.update(): distance_transform_edt
         # MOT LAN moi mask (khong lap lai cho tung d).
-        for c, cname in enumerate(class_names):
+        # boundary_distances rong -> bo qua ca khoi (khong tinh EDT thua; dung cho
+        # Tools/hole_oracle_fill.py chi can mIoU + BF + ASD).
+        for c, cname in enumerate(class_names if boundary_distances else ()):
             gt_c = (t == c) & v
             pred_c = (p == c) & v
             gt_dist = distance_transform_edt(gt_c) if gt_c.any() else None
