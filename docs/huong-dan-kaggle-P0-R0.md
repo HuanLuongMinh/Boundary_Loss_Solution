@@ -85,9 +85,11 @@ Nếu dry-run PASS, chạy hoàn chỉnh. Có thể bỏ dry-run nhờ `--skip-d
 |---|---|---|
 | Dataset **OpenEarthMap** (`aletbm/global-land-cover-mapping-openearthmap`) | **Có** | `images/{train,val}`, `label/{train,val}` |
 | Dataset **checkpoint** (`huanluong/checkpoint-sumary`) | **Có** cho R0 | `best_model_Static_S19.pth`, `best_miou_Static_s86.pth`, `best_model_baseline.pth`, `best_model_BCE_04.pth` |
-| **Output notebook Phần D** (Your Work → Notebooks → `notebook5ab020caa1`, version đã train xong) | **Có** | `output/phanD/snapshots/iter_36000.pth` và `iter_40000.pth` (P0 + nhãn `static_s19r_36k` của R0), `probe_ids.txt` (32 ảnh train để chọn tham số), `figure_images.json`, `logs/benchmark_results.csv` (§2.4) |
+| **Dataset `Boundary_PhanD`** (5 file để phẳng), **hoặc** output notebook Phần D (`notebook5ab020caa1`, version đã train xong) | **Có** | `output/phanD/snapshots/iter_36000.pth` và `iter_40000.pth` (P0 + nhãn `static_s19r_36k` của R0), `probe_ids.txt` (32 ảnh train để chọn tham số), `figure_images.json`, `logs/benchmark_results.csv` (§2.4) |
 
-Script tự tìm mọi đường dẫn trong `/kaggle/input`. Nếu cần, ghi đè bằng biến môi trường: `CK=... DATA=... SNAP=<thu muc snapshots> PHD=<thu muc output/phanD>`.
+Dataset `Boundary_PhanD` để phẳng, gồm 5 file trong cùng một thư mục: `iter_36000.pth`, `iter_40000.pth`, `probe_ids.txt`, `figure_images.json`, `benchmark_results.csv`. Hai file snapshot phải là **file gốc**, không được lưu lại, vì cổng P0-g2 so fingerprint tuyệt đối. Script cũng nhận cấu trúc output gốc của Phần D (`snapshots/`, `logs/`).
+
+Script tự tìm mọi đường dẫn trong `/kaggle/input` và in ra hai dòng `SNAP = …`, `PHD = …` ở đầu log. Nếu cần, ghi đè bằng biến môi trường: `CK=... DATA=... SNAP=<thu muc chua 2 snapshot> PHD=<thu muc chua probe_ids.txt>`.
 
 Nếu thiếu `figure_images.json`, script chọn lại từ GT val theo quy tắc Bước 1 (`Tools/select_figure_images.py`). Nếu thiếu `benchmark_results.csv`, §2.4 chỉ in giá trị hậu kỳ.
 
@@ -196,7 +198,7 @@ python Tools/refine_summary.py --root output/refine
 
 | Triệu chứng | Nguyên nhân / cách xử lý |
 |---|---|
-| `khong tim thay snapshots/iter_36000.pth` | Chưa Add Input output notebook Phần D, hoặc chọn nhầm version chưa có snapshot |
+| `khong tim thay iter_36000.pth + iter_40000.pth` | Chưa Add Input dataset `Boundary_PhanD` hoặc output Phần D, hoặc hai snapshot không nằm cùng một thư mục |
 | `cai pydensecrf KHONG duoc` | Kiểm Internet: On. Nếu vẫn lỗi build (Cython hoặc numpy), gửi log. **Không** thay bằng CRF tự viết (§3.3). Có thể chạy riêng P0 bằng `--stages "p0"` |
 | **P0-g2 FAIL** | Snapshot không đúng file của Phần D (`notebook5ab020caa1`). Kiểm version của output đã Add Input |
 | **P0-g1 FAIL** | mIoU-9 hậu kỳ lệch CSV quá 0,001. Kiểm bản dataset và config (md5 nằm trong `gates_p0.json`, mục `P0-info`) |

@@ -66,16 +66,27 @@ if [[ -z "${DATA:-}" ]]; then
   v="$(find /kaggle/input -maxdepth 7 -type d -path '*images/val' 2>/dev/null | head -1 || true)"
   [[ -n "$v" ]] && DATA="$(dirname "$(dirname "$v")")"
 fi
-[[ -z "${SNAP:-}" ]] && SNAP="$(dirname "$(find /kaggle/input -name iter_36000.pth -path '*snapshots*' 2>/dev/null | head -1 || true)")"
+# Snapshot: uu tien .../snapshots/iter_36000.pth (output Phan D), neu khong co thi lay iter_36000.pth bat ky
+# (dataset tu tao, vd Boundary_PhanD de phang: moi file nam chung 1 thu muc).
+if [[ -z "${SNAP:-}" ]]; then
+  s="$(find /kaggle/input -name iter_36000.pth -path '*snapshots*' 2>/dev/null | head -1 || true)"
+  [[ -n "$s" ]] || s="$(find /kaggle/input -name iter_36000.pth 2>/dev/null | head -1 || true)"
+  SNAP="$(dirname "$s")"
+fi
+# Thu muc Phan D (probe_ids.txt, figure_images.json, benchmark_results.csv): cung thu muc snapshot (de phang),
+# thu muc cha cua snapshots/ (output Phan D), hoac tim probe_ids.txt.
 if [[ -z "${PHD:-}" ]]; then
-  PHD="$(dirname "$SNAP")"
-  [[ -f "$PHD/probe_ids.txt" ]] || PHD="$(dirname "$(find /kaggle/input -name probe_ids.txt -path '*phanD*' 2>/dev/null | head -1 || true)")"
+  if [[ -f "$SNAP/probe_ids.txt" ]]; then PHD="$SNAP"
+  elif [[ -f "$(dirname "$SNAP")/probe_ids.txt" ]]; then PHD="$(dirname "$SNAP")"
+  else PHD="$(dirname "$(find /kaggle/input -name probe_ids.txt -ipath '*phand*' 2>/dev/null | head -1 || true)")"
+  fi
 fi
 echo "  CK   = $CK"; echo "  DATA = $DATA"; echo "  SNAP = $SNAP"; echo "  PHD  = $PHD"
 [[ -n "${DATA:-}" && -d "$DATA/images/val" && -d "$DATA/images/train" ]] || die "khong tim thay dataset OpenEarthMap (images/train, images/val)"
 [[ -n "$SNAP" && "$SNAP" != "." && -f "$SNAP/iter_36000.pth" && -f "$SNAP/iter_40000.pth" ]] \
-  || die "khong tim thay snapshots/iter_36000.pth + iter_40000.pth — Add Input OUTPUT notebook Phan D"
-PROBE="$PHD/probe_ids.txt"; BENCH="$PHD/logs/benchmark_results.csv"; FIG="$PHD/figure_images.json"
+  || die "khong tim thay iter_36000.pth + iter_40000.pth (cung 1 thu muc) — Add Input output Phan D / dataset Boundary_PhanD"
+PROBE="$PHD/probe_ids.txt"; FIG="$PHD/figure_images.json"
+BENCH="$PHD/logs/benchmark_results.csv"; [[ -f "$BENCH" ]] || BENCH="$PHD/benchmark_results.csv"
 [[ -f "$PROBE" ]] || die "khong co probe_ids.txt cua Phan D ($PROBE)"
 [[ -f "$BENCH" ]] && ok "benchmark_results.csv: $BENCH" || { echo "  [!]     khong co benchmark_results.csv — §2.4 chi in gia tri hau ky"; BENCH=""; }
 if has r0; then
