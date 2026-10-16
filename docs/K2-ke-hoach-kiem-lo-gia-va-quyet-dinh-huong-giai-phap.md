@@ -3,6 +3,7 @@
 **Ngày:** 13/10/2026 — viết **trước** khi có số oracle và trước khi xem bất kỳ crop nào. Ngưỡng ở §4 và §5 là tiền đăng ký.
 **Chạy song song với:** `S2-spec-phan-D-quy-dao-xung-dot-gradient.md` (GPU). K2 chỉ dùng CPU + công kiểm bằng mắt.
 **Căn cứ số liệu:** `ket-qua-buoc1-xung-dot-gradient-va-lo-gia-danh-gia.md` §3; `holes_<ckpt>.csv` (Bước 1, Phần B).
+**Bản sửa 1 (15/10/2026, 15:40 — trước khi có bất kỳ số K2-a hay nhãn K2-b nào):** thêm §5.1 — phương án dự phòng "tinh chỉnh biên hậu kỳ" (ý tưởng của anh Huan, 15/10) và phép thử pilot chốt trước. Bối cảnh: Phần D trượt sanity §5, không có kết luận chính thức; bằng chứng mô tả nghiêng về D-N (`ket-qua-phan-D-quy-dao-xung-dot-danh-gia.md`). Các dòng D-N của bảng §5 áp dụng cho trường hợp này. §4 và các dòng cũ của §5 không đổi.
 
 ---
 
@@ -143,6 +144,34 @@ Dự đoán ghi trước (để kiểm, không dùng quyết định): phần l�
 | D-dai-dang | bất kỳ | Dừng; kiểm khác biệt train/val trước |
 
 **Không đổi ngưỡng ở §4 và bảng §5 sau khi thấy số.** Nếu thấy ngưỡng có vẻ sai: ghi nhận xét bên cạnh, giữ nguyên quyết định.
+
+### 5.1. Phương án dự phòng — tinh chỉnh biên hậu kỳ (bản sửa 1, 15/10)
+
+**Khi nào xét:** ở mọi dòng D-N **không** dẫn tới hướng topo (H-nhãn, H-hỗn hợp, hoặc không có đòn bẩy). Ở dòng "D-N + H-mô hình + đòn bẩy", phương án này chỉ là lựa chọn thứ hai, anh Huan quyết thứ tự.
+
+**Ý tưởng:** tách biên khỏi hàm loss — lấy kết quả phân đoạn, tinh chỉnh vị trí đường biên giữa các vùng ở một tầng riêng, không phụ thuộc lớp. Họ phương pháp đã có: SegFix (Yuan et al., ECCV 2020), CascadePSP (Cheng et al., CVPR 2020), PointRend (Kirillov et al., CVPR 2020); baseline không train: DenseCRF (Krähenbühl & Koltun, NeurIPS 2011).
+
+**Động cơ từ dữ liệu của dự án:** Bước 1 và Phần D cho thấy loss biên không xung đột mà quá yếu (‖G_aff‖/‖G_region‖ 0.02–0.06; ‖G_bce‖/‖G_region‖ 0.09–0.13) ⇒ một tầng chuyên cho biên không phải chia gradient với nhiệm vụ chính.
+
+**Phạm vi tác động dự kiến (ghi trước):** chủ yếu **lỗi loại 1** (lệch vị trí); không xoá vùng/lỗ giả (loại 2, 5); không sửa loại 3. **Trần cứng:** oracle-d — sửa đúng mọi pixel dải biên chỉ lấy lại 23–31% dư địa mIoU [P1:G2] ⇒ đo bằng chỉ số biên, không bằng mIoU.
+
+**Pilot P-CRF (CPU, không train, ~1–2h):**
+- Checkpoint: Static s19@36k, Static s86@36k (quyết định); Baseline@40k, BCE λ0.4@40k (mô tả).
+- Đầu vào: softmax của checkpoint (forward lại); nếu không khả thi thì nhãn đã dump với `gt_prob` = 0.7 — ghi rõ chế độ dùng.
+- Siêu tham số DenseCRF **chọn trên 32 ảnh train** của `probe_ids.txt` (Phần D), lưới nhỏ chốt trước: `bi_xy_std` ∈ {40, 80, 121}, `bi_rgb_std` ∈ {3, 5, 10}, `bi_w` ∈ {3, 4, 5}; `pos_xy_std` = 3, `pos_w` = 3, 10 vòng lặp. Tiêu chí chọn: ASD hai chiều trung bình nhỏ nhất. **Không** chọn trên val.
+- Đo trên 384 ảnh val bằng chính `compute_per_image_stats` + `bootstrap_boundary_ci` (micro, 10.000 lần, rng 19): BF precision/recall, ASD `pred→gt` / `gt→pred`, BIoU@{1,2,4}, mIoU-9. Δ = sau CRF − trước.
+
+**Luật đọc P-CRF (chốt trước), cả hai seed Static:**
+
+| Mã | Điều kiện | Đọc ra |
+|---|---|---|
+| **R-có** | (i) Δ `pred→gt` < 0 với CI loại 0; (ii) Δ BIoU@d2 > 0 với CI loại 0; (iii) Δ `gt→pred` không dương quá 0.534 px (biên độ liên-seed Static); (iv) Δ recall có cận dưới CI > −0.0094 | Tinh chỉnh hậu kỳ có triển vọng ⇒ viết spec cho phương pháp có học (SegFix hoặc CascadePSP) + tìm điểm mới cho viễn thám |
+| **R-không** | Không đạt (i) hoặc (ii) ở cả hai seed | Ngay cả baseline CRF không dịch được biên ⇒ không đầu tư; bài 2 theo dòng phân tích |
+| **R-đánh-đổi** | Đạt (i)–(ii) nhưng trượt (iii) hoặc (iv) | CRF chỉ chuyển dịch theo trục đánh đổi precision ↔ recall (như B2) ⇒ ghi mô tả, không đầu tư |
+
+Mô tả kèm: tỉ lệ cải thiện dải biên so với trần oracle-d. **Rủi ro novelty** (ghi trước): SegFix/CascadePSP đã làm tinh chỉnh không phụ thuộc mô hình; điểm mới phải đến từ giao thức đánh giá theo loại lỗi (tinh chỉnh sửa được loại nào, không sửa được loại nào) hoặc đặc thù viễn thám.
+
+**Đổi trục bài 2 sang hướng này cần anh Huan quyết** sau khi có P-CRF.
 
 ---
 
