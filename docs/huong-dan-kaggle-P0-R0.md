@@ -114,15 +114,20 @@ Tổng thời gian khoảng 2,5–4 giờ, nằm trong giới hạn 12 giờ c�
 
 - **Cổng chặn**: dry-run FAIL thì không chạy thật. P0-g2 FAIL (fingerprint lệch) thì P0 dừng trước khi forward. R0-g1 FAIL thì R0 dừng **trước khi chạy CRF**. R0-g2, g3, g4, g5 FAIL thì R0 dừng.
 - P0 FAIL **không** dừng R0, vì hai phần độc lập. Tuy vậy, dòng cuối sẽ báo `rc` khác 0.
-- Thiếu `pydensecrf` (cả 3 lần cài đều lỗi) thì script **dừng và báo**, đúng §3.3. Script không tự viết CRF thay thế. Khi đó vẫn chạy được P0 riêng bằng `--stages "p0"`.
+- Thiếu `pydensecrf` (cả 4 lần cài đều lỗi) thì script **dừng và báo**, đúng §3.3. Script không tự viết CRF thay thế. Khi đó vẫn chạy được P0 riêng bằng `--stages "p0"`.
 
-### 2.1. Cài `pydensecrf`: 3 lần thử, giữ log mọi lần
+### 2.1. Cài `pydensecrf`: 4 lần thử, giữ log mọi lần
+
+Kaggle hiện chạy **Python 3.13**. Repo `lucasb-eyer` ghim `Cython==0.29.36` trong `pyproject.toml` (commit e22f579: "Temp fix for cython 3.0.0 breaking changes"), mà Cython 0.29 không hỗ trợ Python 3.13. Vì thế cách cài thông thường lỗi.
 
 | Lần | Cách cài | Ghi chú |
 |---|---|---|
-| 1 | `pip install git+https://github.com/lucasb-eyer/pydensecrf.git` | Nguồn gợi ý của §3.3 |
-| 2 | Như lần 1, nhưng Cython < 3 và `--no-build-isolation` | Cùng repo gốc |
-| 3 | `pip install pydensecrf2==1.1` | Bản fork của adaptivemotorcontrollab (nhóm DeepLabCut) trên PyPI: cùng mã C++ Krähenbühl & Koltun, cùng module `pydensecrf`, build ghim Cython 0.29.36. Chỉ chạy khi cả hai lần build bản gốc đều lỗi. Đây vẫn là bản build từ mã nguồn, **không** có wheel sẵn |
+| 1 | `pip install -v git+https://github.com/lucasb-eyer/pydensecrf.git` | Nguồn gợi ý của §3.3. Trên Python 3.13: lỗi (Cython 0.29.36) |
+| 2 | Như lần 1, nhưng Cython < 3 và `--no-build-isolation` | Trên Python 3.13: lỗi (Cython 0.29.37) |
+| **3** | **Cùng mã nguồn lucasb-eyer**, ghim commit `2723c7f`, **không sửa dòng nào**. File `.cpp` được sinh bằng Cython 3 (hỗ trợ Python 3.13) với chỉ thị tương thích ngược `legacy_implicit_noexcept=True`, `language_level=2` (đúng ngữ nghĩa Cython 0.29). Sau đó gỡ Cython để `setup.py` gốc build từ `.cpp` (nhánh có sẵn của chính `setup.py`) | Log ghi commit, `git status` (sạch), phiên bản Cython, các file `.cpp` sinh ra và output trình biên dịch |
+| 4 | `pip install -v pydensecrf2==1.1` (fork của adaptivemotorcontrollab) | Cũng ghim Cython 0.29.36, nên trên Python 3.13 gần như chắc chắn lỗi. Chỉ giữ làm bằng chứng |
+
+Hành vi của bản build được kiểm bằng R0-g2 (chỉ unary bằng argmax), R0-g3 (tất định) và R0-g5 (dấu vân tay số liệu).
 
 - Mỗi lần thử ghi **full log** vào `r0_crf/install_logs/attempt<N>_*.log`, kể cả khi lần sau thành công. Nhờ vậy có bằng chứng cụ thể vì sao không dùng được bản gốc.
 - `install_logs/install_summary.json` ghi lần nào lỗi, cách nào được dùng và dòng `pip freeze`. Nguồn và phiên bản CRF cũng được ghi vào `run_log.txt`, `gates_r0.json` (mục `crf_backend`, `crf_install`) và dòng đầu của `crf_val.md`.
@@ -214,7 +219,7 @@ python Tools/refine_summary.py --root output/refine
 | Triệu chứng | Nguyên nhân / cách xử lý |
 |---|---|
 | `khong tim thay iter_36000.pth + iter_40000.pth` | Chưa Add Input dataset `Boundary_PhanD` hoặc output Phần D, hoặc hai snapshot không nằm cùng một thư mục |
-| `cai pydensecrf KHONG duoc (3 lan ...)` | Kiểm Internet: On. Gửi thư mục `output/refine/r0_crf/install_logs/` (đủ 3 file `attempt*.log`). **Không** thay bằng CRF tự viết (§3.3). Có thể chạy riêng P0 bằng `--stages "p0"` |
+| `cai pydensecrf KHONG duoc (4 lan ...)` | Kiểm Internet: On. Gửi thư mục `output/refine/r0_crf/install_logs/` (đủ các file `attempt*.log`, đã có output trình biên dịch nhờ `pip -v`). **Không** thay bằng CRF tự viết (§3.3). Có thể chạy riêng P0 bằng `--stages "p0"` |
 | **P0-g2 FAIL** | Snapshot không đúng file của Phần D (`notebook5ab020caa1`). Kiểm version của output đã Add Input |
 | **P0-g1 FAIL** | mIoU-9 hậu kỳ lệch CSV quá 0,001. Kiểm bản dataset và config (md5 nằm trong `gates_p0.json`, mục `P0-info`) |
 | **R0-g1 FAIL** | Checkpoint hoặc dataset sai bản. Xem `r0_crf/gates/R0-g1.json`. R0 đã dừng trước khi chạy CRF |

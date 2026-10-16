@@ -117,28 +117,53 @@ try_install() { local n="$1" name="$2" log="$3"; shift 3
   grep -iE "error|fatal|cannot|undeclared|not found" "$log" | grep -v "^# " | head -12 | sed 's/^/            /'
   return 1
 }
+PDCRF_COMMIT="2723c7fa4f2ead16ae1ce3d8afe977724bb8f87f"    # lucasb-eyer/pydensecrf master (05/03/2024)
+# Lan 3: cung ma nguon goc, chi doi cong cu sinh .cpp (Cython 3 + chi thi tuong thich nguoc). In tung buoc vao log.
+build_pdcrf_cython3() {
+  local src="${TMPDIR:-/tmp}/pydensecrf_src"
+  rm -rf "$src" || return 1
+  git clone -q https://github.com/lucasb-eyer/pydensecrf.git "$src" || return 1
+  git -C "$src" checkout -q "$PDCRF_COMMIT" || return 1
+  echo "# commit: $(git -C "$src" rev-parse HEAD); git status (phai sach):"; git -C "$src" status --short
+  pip install "cython>=3.0.11,<3.1" setuptools wheel || return 1
+  python -c "import Cython; print('# Cython', Cython.__version__)"
+  (cd "$src" && python -m Cython.Build.Cythonize -f --cplus -X legacy_implicit_noexcept=True -X language_level=2 \
+      pydensecrf/eigen.pyx pydensecrf/densecrf.pyx) || return 1
+  ls -la "$src/pydensecrf/"*.cpp
+  echo "# git status sau cythonize (chi duoc them eigen.cpp, densecrf.cpp):"; git -C "$src" status --short
+  pip uninstall -y cython || return 1           # -> setup.py goc vao nhanh ImportError: build tu .cpp vua sinh
+  pip install -v --no-build-isolation "$src"
+}
 if has r0; then
   step "Cai pydensecrf (§3.3)"
   mkdir -p "$ILOG"
   if crf_import; then
     ok "pydensecrf da co san — khong cai"
   else
+    python -V > "$ILOG/00_python_version.log" 2>&1 || true
+    echo "  $(cat "$ILOG/00_python_version.log")"
     pip install cython > "$ILOG/00_cython.log" 2>&1 || true
     if ! try_install 1 "lucasb-eyer git (pip mac dinh)" "$ILOG/attempt1_lucasb-eyer.log" \
-           pip install git+https://github.com/lucasb-eyer/pydensecrf.git; then
+           pip install -v git+https://github.com/lucasb-eyer/pydensecrf.git; then
       pip install "cython<3" setuptools wheel > "$ILOG/00_cython_lt3.log" 2>&1 || true
       if ! try_install 2 "lucasb-eyer git (Cython<3, --no-build-isolation)" "$ILOG/attempt2_lucasb-eyer_cython_lt3.log" \
-             pip install --no-build-isolation git+https://github.com/lucasb-eyer/pydensecrf.git; then
-        echo "  (2 lan build ban goc lucasb-eyer that bai — du phong: pydensecrf2==1.1, fork adaptivemotorcontrollab"
-        echo "   (DeepLabCut), cung ma C++ Kraehenbuehl & Koltun, cung module pydensecrf, build ghim Cython 0.29.36;"
-        echo "   R0-g2/g3/g5 van kiem hanh vi)"
-        try_install 3 "pydensecrf2==1.1 (PyPI, fork adaptivemotorcontrollab)" "$ILOG/attempt3_pydensecrf2.log" \
-            pip install pydensecrf2==1.1 || true
+             pip install -v --no-build-isolation git+https://github.com/lucasb-eyer/pydensecrf.git; then
+        # Lan 1-2 hong vi repo ghim Cython==0.29.36 (pyproject.toml) — Cython 0.29 khong ho tro Python 3.13.
+        # Lan 3: CUNG ma nguon lucasb-eyer (commit ghim, khong sua dong nao); .cpp sinh bang Cython 3 (ho tro 3.13)
+        # voi chi thi tuong thich nguoc (legacy_implicit_noexcept, language_level=2 = ngu nghia Cython 0.29);
+        # go Cython de setup.py goc build tu .cpp (nhanh ImportError co san cua setup.py).
+        echo "  (lan 1-2 hong: repo ghim Cython 0.29.36, khong ho tro $(cat "$ILOG/00_python_version.log") — lan 3: cung ma"
+        echo "   lucasb-eyer @ $PDCRF_COMMIT, .cpp sinh bang Cython 3 + chi thi tuong thich 0.29; R0-g2/g3/g5 van kiem hanh vi)"
+        if ! try_install 3 "lucasb-eyer @ ${PDCRF_COMMIT:0:7}, .cpp sinh bang Cython 3 (legacy_implicit_noexcept, language_level=2)" \
+               "$ILOG/attempt3_lucasb-eyer_cython3_cpp.log" build_pdcrf_cython3; then
+          try_install 4 "pydensecrf2==1.1 (PyPI, fork adaptivemotorcontrollab)" "$ILOG/attempt4_pydensecrf2.log" \
+              pip install -v pydensecrf2==1.1 || true
+        fi
       fi
     fi
   fi
   pip freeze 2>/dev/null | grep -i densecrf > "$ILOG/pip_freeze_densecrf.txt" || true
-  python - "$ILOG" "${ATTEMPTS[@]}" <<'PYEOF'
+  PDCRF_COMMIT="$PDCRF_COMMIT" python - "$ILOG" "${ATTEMPTS[@]}" <<'PYEOF'
 import json, os, sys
 d, items = sys.argv[1], sys.argv[2:]
 att = [dict(zip(('n', 'method', 'ok', 'log'), x.split('|'))) for x in items]
@@ -146,13 +171,14 @@ for a in att:
     a['n'], a['ok'] = int(a['n']), a['ok'] == '1'
 fz = open(os.path.join(d, 'pip_freeze_densecrf.txt')).read().strip() if os.path.exists(os.path.join(d, 'pip_freeze_densecrf.txt')) else ''
 used = next((a['method'] for a in att if a['ok']), 'da co san' if not att else None)
-json.dump({'attempts': att, 'used': used, 'pip_freeze': fz}, open(os.path.join(d, 'install_summary.json'), 'w'),
+json.dump({'attempts': att, 'used': used, 'pip_freeze': fz, 'python': sys.version,
+           'lucasb_eyer_commit': os.environ.get('PDCRF_COMMIT')}, open(os.path.join(d, 'install_summary.json'), 'w'),
           indent=2, ensure_ascii=False)
 PYEOF
   if python Tools/r0_pcrf.py crf-info; then
     CRF_OK=1; ok "pydensecrf: $(cat "$ILOG/pip_freeze_densecrf.txt" 2>/dev/null) — log cai dat: $ILOG"
   else
-    die "cai pydensecrf KHONG duoc (3 lan, log: $ILOG) — theo §3.3 dung, KHONG tu viet CRF thay the. (Chi chay P0: --stages p0)"
+    die "cai pydensecrf KHONG duoc (4 lan, log: $ILOG) — theo §3.3 dung, KHONG tu viet CRF thay the. (Chi chay P0: --stages p0)"
   fi
 fi
 

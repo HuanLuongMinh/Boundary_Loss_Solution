@@ -124,6 +124,8 @@ def crf_backend_info():
     if 'dist_name' not in info:
         info['metadata_error'] = 'khong tim thay metadata pydensecrf / pydensecrf2'
     info['source'] = ('lucasb-eyer (git)' if info.get('source_url') and 'lucasb-eyer' in info['source_url']
+                      else 'lucasb-eyer (ban sao git ghim commit, .cpp sinh bang Cython 3)'
+                      if info.get('source_url') and 'pydensecrf_src' in info['source_url']
                       else 'pydensecrf2 (PyPI fork adaptivemotorcontrollab)' if info.get('dist_name') == 'pydensecrf2'
                       else info.get('source_url') or 'khong ro')
     return info
