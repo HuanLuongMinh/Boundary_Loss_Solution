@@ -99,8 +99,8 @@ Nếu thiếu `figure_images.json`, script chọn lại từ GT val theo quy t�
 
 | Bước | Việc | Thời gian (GPU T4 + 4 CPU) | Dòng log mong đợi |
 |---|---|---|---|
-| Cài thư viện | `requirements.txt` + `pip install git+https://github.com/lucasb-eyer/pydensecrf.git` | 2–4 phút | `[OK]    pydensecrf: pydensecrf @ git+...@<commit>` |
-| Self-test | `Tools/test_refine.py --require-crf` | khoảng 1 phút | `[OK]    30/30 PASS` |
+| Cài thư viện | `requirements.txt` + `pydensecrf`, thử theo thứ tự (xem mục 2.1) | 2–6 phút | `[OK]    lan N OK`, `[OK]    pydensecrf: ...` |
+| Self-test | `Tools/test_refine.py --require-crf` | khoảng 1 phút | `[OK]    34/34 PASS` |
 | **Dry-run** | P0 + R0 trên 4 ảnh val, 2 ảnh train, bootstrap 200 lần | 10–15 phút | `[OK]    DRY-RUN PASS` |
 | **P0** | Fingerprint → forward 2 snapshot × 384 ảnh → JSON + per-image + masks | khoảng 15–25 phút | `[PASS] P0-g2: 2/2 snapshot khop fingerprint`, `[PASS] P0-g1: ...` |
 | R0-g1 | Forward val của 5 checkpoint, kiểm mIoU-9 trước CRF | khoảng 10 phút | `[static_s19_36k] mIoU-9 truoc CRF 0.65405 (ky vong 0.6540486)` |
@@ -112,9 +112,21 @@ Nếu thiếu `figure_images.json`, script chọn lại từ GT val theo quy t�
 
 Tổng thời gian khoảng 2,5–4 giờ, nằm trong giới hạn 12 giờ của một phiên.
 
-- **Cổng chặn**: dry-run FAIL thì không chạy thật. P0-g2 FAIL (fingerprint lệch) thì P0 dừng trước khi forward. R0-g1 FAIL thì R0 dừng **trước khi chạy CRF**. R0-g2, g3, g4 FAIL thì R0 dừng.
+- **Cổng chặn**: dry-run FAIL thì không chạy thật. P0-g2 FAIL (fingerprint lệch) thì P0 dừng trước khi forward. R0-g1 FAIL thì R0 dừng **trước khi chạy CRF**. R0-g2, g3, g4, g5 FAIL thì R0 dừng.
 - P0 FAIL **không** dừng R0, vì hai phần độc lập. Tuy vậy, dòng cuối sẽ báo `rc` khác 0.
-- Thiếu `pydensecrf` (cài không được) thì script **dừng và báo**, đúng §3.3. Script không tự viết CRF thay thế. Khi đó vẫn chạy được P0 riêng bằng `--stages "p0"`.
+- Thiếu `pydensecrf` (cả 3 lần cài đều lỗi) thì script **dừng và báo**, đúng §3.3. Script không tự viết CRF thay thế. Khi đó vẫn chạy được P0 riêng bằng `--stages "p0"`.
+
+### 2.1. Cài `pydensecrf`: 3 lần thử, giữ log mọi lần
+
+| Lần | Cách cài | Ghi chú |
+|---|---|---|
+| 1 | `pip install git+https://github.com/lucasb-eyer/pydensecrf.git` | Nguồn gợi ý của §3.3 |
+| 2 | Như lần 1, nhưng Cython < 3 và `--no-build-isolation` | Cùng repo gốc |
+| 3 | `pip install pydensecrf2==1.1` | Bản fork của adaptivemotorcontrollab (nhóm DeepLabCut) trên PyPI: cùng mã C++ Krähenbühl & Koltun, cùng module `pydensecrf`, build ghim Cython 0.29.36. Chỉ chạy khi cả hai lần build bản gốc đều lỗi. Đây vẫn là bản build từ mã nguồn, **không** có wheel sẵn |
+
+- Mỗi lần thử ghi **full log** vào `r0_crf/install_logs/attempt<N>_*.log`, kể cả khi lần sau thành công. Nhờ vậy có bằng chứng cụ thể vì sao không dùng được bản gốc.
+- `install_logs/install_summary.json` ghi lần nào lỗi, cách nào được dùng và dòng `pip freeze`. Nguồn và phiên bản CRF cũng được ghi vào `run_log.txt`, `gates_r0.json` (mục `crf_backend`, `crf_install`) và dòng đầu của `crf_val.md`.
+- Console in các dòng lỗi chính của mỗi lần thử thất bại.
 
 ---
 
@@ -140,7 +152,9 @@ refine/
     figures/<nhan>__<anh>.png             6 ảnh × 2 checkpoint quyết định: trước CRF / sau CRF / GT
     masks/<nhan>/*.png                    mask sau CRF (384 ảnh × 5)
     grid/, val/                           số liệu thô từng ảnh (tổng hợp lại không cần chạy lại)
-    gates/R0-g{1..4}.json, gates_r0.json  cổng, mã §3.6, chế độ đầu vào, phiên bản pydensecrf
+    gates/R0-g{1..5}.json, gates_r0.json  cổng, mã §3.6, chế độ đầu vào, nguồn + phiên bản pydensecrf, log cài đặt
+    crf_fingerprint.json, crf_fingerprint/  dấu vân tay số liệu CRF (R0-g5): 3 mask + sha256
+    install_logs/                         full log mọi lần cài pydensecrf + install_summary.json
     run_log.txt                           chế độ đầu vào (softmax / gt_prob), pydensecrf version + commit, git_commit
 ```
 
@@ -154,6 +168,7 @@ refine/
 | **R0-g2** | CRF với `bi_w` = `pos_w` = 0 cho kết quả bằng argmax softmax | ≥ 99,99% pixel trên 4 ảnh |
 | **R0-g3** | Chạy lại 2 ảnh với cùng tham số | trùng tuyệt đối |
 | **R0-g4** | Tập chọn đúng 32 id của `probe_ids.txt`, không có id val nào. Kèm điều kiện `probe_ids` sinh lại (rng 19) khớp file | khớp |
+| **R0-g5** | Dấu vân tay số liệu CRF. Chạy CRF trên 3 ảnh val đầu (theo tên) với tham số cố định (`bi_xy_std` 80, `bi_rgb_std` 5, `bi_w` 4, `pos` 3/3, 10 vòng lặp). Unary dựng **từ GT** (0,7 / 0,3÷8), nên không phụ thuộc model hay GPU. Lưu mask và sha256. Lần đầu: `RECORDED`. Lần chạy thật so với lần dry-run cùng notebook; resume so với lần trước | sha256 trùng tuyệt đối với mọi tham chiếu |
 
 ### Luật §3.6: mọi mã đều là **mô tả** (K2 §5.2)
 
@@ -199,11 +214,12 @@ python Tools/refine_summary.py --root output/refine
 | Triệu chứng | Nguyên nhân / cách xử lý |
 |---|---|
 | `khong tim thay iter_36000.pth + iter_40000.pth` | Chưa Add Input dataset `Boundary_PhanD` hoặc output Phần D, hoặc hai snapshot không nằm cùng một thư mục |
-| `cai pydensecrf KHONG duoc` | Kiểm Internet: On. Nếu vẫn lỗi build (Cython hoặc numpy), gửi log. **Không** thay bằng CRF tự viết (§3.3). Có thể chạy riêng P0 bằng `--stages "p0"` |
+| `cai pydensecrf KHONG duoc (3 lan ...)` | Kiểm Internet: On. Gửi thư mục `output/refine/r0_crf/install_logs/` (đủ 3 file `attempt*.log`). **Không** thay bằng CRF tự viết (§3.3). Có thể chạy riêng P0 bằng `--stages "p0"` |
 | **P0-g2 FAIL** | Snapshot không đúng file của Phần D (`notebook5ab020caa1`). Kiểm version của output đã Add Input |
 | **P0-g1 FAIL** | mIoU-9 hậu kỳ lệch CSV quá 0,001. Kiểm bản dataset và config (md5 nằm trong `gates_p0.json`, mục `P0-info`) |
 | **R0-g1 FAIL** | Checkpoint hoặc dataset sai bản. Xem `r0_crf/gates/R0-g1.json`. R0 đã dừng trước khi chạy CRF |
 | **R0-g2 / g3 FAIL** | Bản cài `pydensecrf` hành xử lạ. Gửi `gates/R0-g2.json`, `R0-g3.json` và `run_log.txt` |
+| **R0-g5 FAIL** | Bản CRF (hoặc dataset) đã khác lần chạy tham chiếu, nên số liệu không so sánh được với nhau. Xem `gates/R0-g5.json` (`compared_with`) và `install_logs/install_summary.json`. Không ép chạy tiếp |
 | **R0-g4 FAIL** | `probe_ids.txt` không phải bản của Phần D, hoặc có ảnh val lẫn vào. Không chạy tiếp |
 | Hết RAM (Killed) | Giảm `--workers`. Mỗi tiến trình CRF giữ một softmax 1024² × 9 (khoảng 38 MB) cộng với lưới permutohedral |
 | Chậm hơn ước tính nhiều | Xem `CRF x.xxs/lan` trong log lưới. Nếu quá lâu, dùng `--resume` ở phiên sau. Không đổi lưới hay số vòng lặp (§4) |

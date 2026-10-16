@@ -207,8 +207,21 @@ def test_aggregate_grid():
     check('28 hang (truoc + 27)', len(agg) == 28 and all(r['n_images'] == 3 for r in agg))
 
 
+def test_fingerprint_parts():
+    print('10. Dau van tay CRF (R0-g5): unary tu GT, hash')
+    gt = np.array([[0, 8], [IGNORE_INDEX, 3]], dtype=np.int64)
+    p = R.gt_unary_prob(gt)
+    check('0.7 o nhan GT, 0.3/8 lop khac', np.isclose(p[0, 0, 0], 0.7) and np.isclose(p[8, 0, 1], 0.7)
+          and np.isclose(p[1, 0, 0], 0.3 / 8) and np.allclose(p.sum(0), 1))
+    check('pixel ignore = deu 1/9', np.allclose(p[:, 1, 0], 1 / 9))
+    m = np.arange(12, dtype=np.uint8).reshape(3, 4)
+    check('sha256 tat dinh, phan biet shape', R.mask_sha256(m) == R.mask_sha256(m.copy())
+          and R.mask_sha256(m) != R.mask_sha256(m.reshape(4, 3)))
+    check('tham so fingerprint = GRID[13] + co dinh', R.FP_COMBO == R.G3_COMBO and R.FP_N == 3)
+
+
 def test_crf(require):
-    print('10. CRF that (pydensecrf)')
+    print('11. CRF that (pydensecrf)')
     try:
         import pydensecrf.densecrf  # noqa: F401
     except Exception:
@@ -233,7 +246,7 @@ def test_crf(require):
 if __name__ == '__main__':
     require = '--require-crf' in sys.argv
     for fn in (test_grid, test_select_tie, test_unary, test_bootstrap_extra, test_rule, test_small_and_bands,
-               test_bounded_imap, test_fingerprint_gate, test_aggregate_grid):
+               test_bounded_imap, test_fingerprint_gate, test_aggregate_grid, test_fingerprint_parts):
         fn()
     test_crf(require)
     n_fail = sum(1 for _n, ok in RESULTS if not ok)

@@ -100,19 +100,73 @@ def crf_backend_info():
         raise SystemExit(f"[R0] Khong import duoc pydensecrf ({type(e).__name__}: {e}) — DUNG, khong tu viet CRF "
                          f"thay the (§3.3). Cai: pip install git+https://github.com/lucasb-eyer/pydensecrf.git")
     info = {'module_file': getattr(pydensecrf, '__file__', None)}
-    try:
-        import importlib.metadata as md
-        dist = md.distribution('pydensecrf')
+    import importlib.metadata as md
+    # 'pydensecrf' = build tu git lucasb-eyer (nguon goi y cua §3.3); 'pydensecrf2' = fork adaptivemotorcontrollab
+    # (DeepLabCut) tren PyPI, cung ma C++ Kraehenbuehl & Koltun, cung module `pydensecrf`, build ghim Cython 0.29.36
+    # (du phong khi build lucasb-eyer that bai).
+    for dist_name in ('pydensecrf', 'pydensecrf2'):
+        try:
+            dist = md.distribution(dist_name)
+        except md.PackageNotFoundError:
+            continue
+        info['dist_name'] = dist_name
         info['version'] = dist.version
-        du = dist.read_text('direct_url.json')
-        if du:
-            import json
-            j = json.loads(du)
-            info['source_url'] = j.get('url')
-            info['commit'] = (j.get('vcs_info') or {}).get('commit_id')
-    except Exception as e:  # pragma: no cover
-        info['metadata_error'] = str(e)
+        try:
+            du = dist.read_text('direct_url.json')
+            if du:
+                import json
+                j = json.loads(du)
+                info['source_url'] = j.get('url')
+                info['commit'] = (j.get('vcs_info') or {}).get('commit_id')
+        except Exception as e:  # pragma: no cover
+            info['metadata_error'] = str(e)
+        break
+    if 'dist_name' not in info:
+        info['metadata_error'] = 'khong tim thay metadata pydensecrf / pydensecrf2'
+    info['source'] = ('lucasb-eyer (git)' if info.get('source_url') and 'lucasb-eyer' in info['source_url']
+                      else 'pydensecrf2 (PyPI fork adaptivemotorcontrollab)' if info.get('dist_name') == 'pydensecrf2'
+                      else info.get('source_url') or 'khong ro')
     return info
+
+
+# ═════════════════════ Dau van tay so lieu cua ban CRF (R0-g5) ═════════════════
+# CRF tren FP_N anh val dau (thu tu ten), tham so co dinh, unary dung tu GT (0.7 cho nhan GT, 0.3/8 cho lop khac,
+# pixel ignore = deu 1/9) -> KHONG phu thuoc model/GPU: hash chi doi khi ban CRF (hoac dataset) doi.
+FP_N = 3
+FP_COMBO = G3_COMBO                       # = GRID[13] (80, 5, 4), cung tham so R0-g3
+
+
+def gt_unary_prob(gt):
+    C = NUM_CLASSES
+    p = np.full((C,) + gt.shape, (1.0 - GT_PROB) / (C - 1), dtype=np.float32)
+    valid = gt != IGNORE_INDEX
+    lab = np.where(valid, gt, 0)
+    np.put_along_axis(p, lab[None], GT_PROB, axis=0)
+    p[:, ~valid] = 1.0 / C
+    return p
+
+
+def mask_sha256(m):
+    import hashlib
+    m = np.ascontiguousarray(m.astype(np.uint8))
+    return hashlib.sha256(f'{m.shape}'.encode() + m.tobytes()).hexdigest()
+
+
+def crf_fingerprint(val_ds, out_dir, n=FP_N):
+    params = {**FIXED, **GRID[FP_COMBO]}
+    imgs = []
+    for i in range(n):
+        name, gt = load_gt_cached(val_ds, i, None)
+        gt = np.asarray(gt).astype(np.int64)
+        rgb = load_rgb_1024(val_ds.samples[i][0], gt.shape[0])
+        pred = crf_infer(gt_unary_prob(gt), rgb, params, 'softmax')
+        save_png(pred, os.path.join(out_dir, 'crf_fingerprint', name + '.png'))
+        valid = gt != IGNORE_INDEX
+        imgs.append({'image': name, 'sha256': mask_sha256(pred), 'rgb_sha256': mask_sha256(rgb),
+                     'n_px': int(pred.size), 'n_diff_vs_gt': int(((pred != gt) & valid).sum()),
+                     'label_hist': np.bincount(pred.ravel(), minlength=NUM_CLASSES).tolist()})
+    return {'params': params, 'unary': 'tu GT: 0.7 / 0.3/8, ignore = 1/9; -log(max(p,1e-8))', 'images': imgs,
+            'combined_sha256': __import__('hashlib').sha256(''.join(x['sha256'] for x in imgs).encode()).hexdigest()}
 
 
 def unary_from_prob(prob, mode):
@@ -352,12 +406,47 @@ def stage_g23(ctx):
           'params': p3, 'per_image': per3,
           'detail': f"chay lai {len(per3)} anh, {combo_name(GRID[G3_COMBO])}: "
                     f"{'trung tuyet doi' if ok3 else 'KHAC'}"}
-    for g in (g2, g3):
+    g5 = stage_fingerprint(ctx)
+    for g in (g2, g3, g5):
         write_json(g, os.path.join(gd, f"{g['gate']}.json"))
         print(f"  [{g['status']}] {g['gate']}: {g['detail']}")
         ctx.log(f"{g['gate']} {g['status']}: {g['detail']}")
     if g2['status'] != 'PASS' or g3['status'] != 'PASS':
         raise SystemExit("R0-g2/g3 FAIL — DUNG (cai dat CRF khong dung nhu ky vong).")
+    if g5['status'] == 'FAIL':
+        raise SystemExit("R0-g5 FAIL: dau van tay so lieu CRF khac lan chay tham chieu — ban CRF da doi, so lieu "
+                         "khong so sanh duoc. DUNG.")
+
+
+def stage_fingerprint(ctx):
+    """R0-g5: CRF tren FP_N anh val co dinh (unary tu GT, tham so co dinh) -> sha256 mask. So voi tham chieu:
+    --crf-ref (vd fingerprint cua dry-run cung notebook) va crf_fingerprint.json da co trong output (resume)."""
+    path = os.path.join(ctx.out, 'crf_fingerprint.json')
+    refs = []
+    if ctx.args.crf_ref and os.path.exists(ctx.args.crf_ref):
+        refs.append((ctx.args.crf_ref, read_json(ctx.args.crf_ref)))
+    if os.path.exists(path) and not ctx.args.force:
+        refs.append((path, read_json(path)))
+    fp = crf_fingerprint(ctx.val_ds, ctx.out)
+    fp.update({'crf_backend': crf_backend_info(), 'git_commit': get_git_commit(),
+               'created_at': datetime.datetime.now().isoformat(timespec='seconds')})
+    cmp = [{'ref': p, 'ref_combined_sha256': r.get('combined_sha256'),
+            'match': r.get('combined_sha256') == fp['combined_sha256'] and r.get('params') == fp['params']}
+           for p, r in refs]
+    if any(not c['match'] for c in cmp):
+        status = 'FAIL'
+    elif cmp:
+        status = 'PASS'
+    else:
+        status = 'RECORDED'
+    write_json(fp, path)
+    src = fp['crf_backend'].get('source')
+    return {'gate': 'R0-g5', 'status': status, 'blocking': True, 'fingerprint': fp, 'compared_with': cmp,
+            'detail': f"CRF {src} {fp['crf_backend'].get('version')}: {FP_N} anh val co dinh "
+                      f"({', '.join(x['image'] for x in fp['images'])}), {combo_name(GRID[FP_COMBO])}, "
+                      f"sha256 {fp['combined_sha256'][:16]}… — "
+                      + (f"{sum(c['match'] for c in cmp)}/{len(cmp)} tham chieu khop" if cmp
+                         else 'chua co tham chieu, ghi moi (crf_fingerprint.json)')}
 
 
 # ═════════════════════════════════ Stage grid ═════════════════════════════════
@@ -751,6 +840,20 @@ def render_figures(ctx):
     return made
 
 
+def install_summary(log_dir):
+    """Doc install_summary.json do scripts/kaggle_P0_R0.sh ghi (moi lan thu cai pydensecrf + duong dan full log)."""
+    if not log_dir:
+        return None
+    p = os.path.join(log_dir, 'install_summary.json')
+    if not os.path.exists(p):
+        return {'log_dir': log_dir, 'text': 'khong co install_summary.json'}
+    j = read_json(p)
+    tries = j.get('attempts', [])
+    j['log_dir'] = log_dir
+    j['text'] = '; '.join(f"lan {t['n']} {t['method']}: {'OK' if t['ok'] else 'LOI'} (log {t['log']})" for t in tries)         or 'da co san, khong can cai'
+    return j
+
+
 def stage_report(ctx):
     out, vdir = ctx.out, os.path.join(ctx.out, 'val')
     labels = [lb for lb in ctx.labels if os.path.exists(os.path.join(vdir, f'done_{lb}.json'))]
@@ -786,7 +889,7 @@ def stage_report(ctx):
     # gates
     gd = os.path.join(out, 'gates')
     gates = [read_json(os.path.join(gd, f'{g}.json')) if os.path.exists(os.path.join(gd, f'{g}.json'))
-             else {'gate': g, 'status': 'MISSING', 'detail': 'chua chay'} for g in ('R0-g1', 'R0-g2', 'R0-g3', 'R0-g4')]
+             else {'gate': g, 'status': 'MISSING', 'detail': 'chua chay'} for g in ('R0-g1', 'R0-g2', 'R0-g3', 'R0-g4', 'R0-g5')]
     if not dryrun:
         g1 = gates[0]
         for c in g1.get('checks', []):     # nhat quan: mIoU-9 'truoc' cua stage val == g1
@@ -794,7 +897,8 @@ def stage_report(ctx):
             c['val_stage_before_miou9'] = got
             c['val_stage_consistent'] = bool(abs(got - c['got']) < 1e-9)
     crf = crf_backend_info()
-    overall = 'PASS' if all(g['status'] in ('PASS', 'SKIP_DRYRUN') for g in gates) else 'FAIL'
+    overall = 'PASS' if all(g['status'] in ('PASS', 'SKIP_DRYRUN', 'RECORDED') for g in gates) else 'FAIL'
+    install = install_summary(ctx.args.install_log_dir)
     eta = None
     gdone = [read_json(os.path.join(out, 'grid', f'done_{lb}.json')) for lb in labels
              if os.path.exists(os.path.join(out, 'grid', f'done_{lb}.json'))]
@@ -806,12 +910,14 @@ def stage_report(ctx):
                'val_min': len(R0_LABELS) * N_VAL * (t + 3.0) / w / 60,
                'note': 'uoc tinh tu dry-run: +15% thong ke cho luoi, +3 s/anh thong ke BIoU + mo ta cho val'}
     write_json({'overall': overall, 'gates': gates, 'rule_36': rule, 'rule_36_sensitivity_biou9': rule9,
-                'rule_note': K2_52_NOTE, 'input_mode': ctx.mode, 'crf_backend': crf, 'fixed': FIXED,
+                'rule_note': K2_52_NOTE, 'input_mode': ctx.mode, 'crf_backend': crf, 'crf_install': install,
+                'crf_fingerprint': read_json(os.path.join(out, 'crf_fingerprint.json'))
+                if os.path.exists(os.path.join(out, 'crf_fingerprint.json')) else None, 'fixed': FIXED,
                 'labels': labels, 'n_images': n_images, 'n_boot': ctx.args.n_boot, 'dryrun': dryrun,
                 'self_check_biou8_d2_abs_diff': self_chk, 'eta_full_run': eta,
                 'git_commit': get_git_commit(), 'created_at': datetime.datetime.now().isoformat(timespec='seconds')},
                os.path.join(out, 'gates_r0.json'))
-    write_md(ctx, df, pc, ch, sm, rule, rule9, b2, gates, sel, figs, crf, n_images, dryrun)
+    write_md(ctx, df, pc, ch, sm, rule, rule9, b2, gates, sel, figs, crf, n_images, dryrun, install)
     ctx.log(f"report: cong {overall}, ma §3.6 = {rule['code']} (mo ta), mode={ctx.mode}, "
             f"pydensecrf={crf.get('version')}@{crf.get('commit')}, git={get_git_commit()}")
     for g in gates:
@@ -824,12 +930,13 @@ def stage_report(ctx):
     return overall
 
 
-def write_md(ctx, df, pc, ch, sm, rule, rule9, b2, gates, sel, figs, crf, n_images, dryrun):
+def write_md(ctx, df, pc, ch, sm, rule, rule9, b2, gates, sel, figs, crf, n_images, dryrun, install=None):
     L = ['# R0 — P-CRF (DenseCRF hau ky, baseline khong hoc)', '',
          f"> {K2_52_NOTE}", '',
          f"- Che do dau vao CRF: **{ctx.mode}** "
          f"({'softmax fp32 1024², unary = −log(max(p, 1e-8))' if ctx.mode == 'softmax' else 'nhan argmax, gt_prob = 0.7'})",
-         f"- pydensecrf: version {crf.get('version')}, commit {crf.get('commit')}, nguon {crf.get('source_url')}",
+         f"- pydensecrf: **{crf.get('source')}**, goi `{crf.get('dist_name')}` {crf.get('version')}, "
+         f"commit {crf.get('commit')}" + (f" — cai dat: {install['text']}" if install else ''),
          f"- Co dinh: pos_xy_std {FIXED['pos_xy_std']}, pos_w {FIXED['pos_w']}, {FIXED['n_iter']} vong lap; "
          f"luoi 27 to hop chon tren 32 anh train `probe_ids.txt` (tieu chi: min ASD hai chieu trung binh, micro)",
          f"- Do: val {n_images} anh, `compute_per_image_stats` + `bootstrap_boundary_ci` (micro), bootstrap ghep cap "
@@ -947,6 +1054,8 @@ def parse_args(argv=None):
     ap.add_argument('--max-val', type=int, default=None, help='dry-run: N anh val dau')
     ap.add_argument('--max-probe', type=int, default=None, help='dry-run: N anh probe dau')
     ap.add_argument('--force', action='store_true')
+    ap.add_argument('--crf-ref', default=None, help='crf_fingerprint.json tham chieu (R0-g5), vd cua dry-run')
+    ap.add_argument('--install-log-dir', default=None, help='thu muc log cai pydensecrf (install_summary.json)')
     return ap.parse_args(argv)
 
 
@@ -964,6 +1073,9 @@ def main(argv=None):
     ctx.log(f"r0 {args.cmd} stages={stages} labels={ctx.labels} mode={ctx.mode} max_val={args.max_val} "
             f"max_probe={args.max_probe} workers={args.workers} device={ctx.device} pydensecrf={crf} "
             f"git={get_git_commit()} argv={' '.join(sys.argv)}")
+    inst = install_summary(args.install_log_dir)
+    if inst:
+        ctx.log(f"cai pydensecrf: {inst['text']} — full log: {inst['log_dir']}")
     if args.probe_ids is None and any(s in stages for s in ('g23', 'grid', 'select')):
         raise SystemExit("can --probe-ids (probe_ids.txt cua Phan D)")
     pool = make_pool(args.workers) if any(s in stages for s in ('grid', 'val')) else None

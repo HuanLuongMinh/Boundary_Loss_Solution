@@ -104,21 +104,55 @@ fi
 ok "figure_images.json: $FIG"
 
 CRF_OK=0
+ILOG="$RF/r0_crf/install_logs"            # full log MOI lan thu cai (giu ca khi lan sau thanh cong)
+ATTEMPTS=()                               # "n|phuong an|ok(0/1)|log"
+crf_import() { python -c "import pydensecrf.densecrf" >/dev/null 2>&1; }
+# try_install <n> <ten phuong an> <log> <lenh pip...>
+try_install() { local n="$1" name="$2" log="$3"; shift 3
+  echo "  -> lan $n: $name (full log: $log)"
+  { echo "# $(date -Is) $*"; "$@"; echo "# exit=$?"; } > "$log" 2>&1 || true
+  if crf_import; then ATTEMPTS+=("$n|$name|1|$log"); ok "lan $n OK"; return 0; fi
+  ATTEMPTS+=("$n|$name|0|$log")
+  echo "  [!]     lan $n LOI — cac dong loi chinh:"
+  grep -iE "error|fatal|cannot|undeclared|not found" "$log" | grep -v "^# " | head -12 | sed 's/^/            /'
+  return 1
+}
 if has r0; then
   step "Cai pydensecrf (§3.3)"
-  if ! python -c "import pydensecrf.densecrf" 2>/dev/null; then
-    pip install -q cython 2>&1 | tail -2 || true
-    pip install -q git+https://github.com/lucasb-eyer/pydensecrf.git 2>&1 | tail -5 || true
-    if ! python -c "import pydensecrf.densecrf" 2>/dev/null; then
-      echo "  (lan 1 that bai — thu lai cung repo voi Cython < 3, --no-build-isolation)"
-      pip install -q "cython<3" setuptools wheel 2>&1 | tail -2 || true
-      pip install -q --no-build-isolation git+https://github.com/lucasb-eyer/pydensecrf.git 2>&1 | tail -5 || true
+  mkdir -p "$ILOG"
+  if crf_import; then
+    ok "pydensecrf da co san — khong cai"
+  else
+    pip install cython > "$ILOG/00_cython.log" 2>&1 || true
+    if ! try_install 1 "lucasb-eyer git (pip mac dinh)" "$ILOG/attempt1_lucasb-eyer.log" \
+           pip install git+https://github.com/lucasb-eyer/pydensecrf.git; then
+      pip install "cython<3" setuptools wheel > "$ILOG/00_cython_lt3.log" 2>&1 || true
+      if ! try_install 2 "lucasb-eyer git (Cython<3, --no-build-isolation)" "$ILOG/attempt2_lucasb-eyer_cython_lt3.log" \
+             pip install --no-build-isolation git+https://github.com/lucasb-eyer/pydensecrf.git; then
+        echo "  (2 lan build ban goc lucasb-eyer that bai — du phong: pydensecrf2==1.1, fork adaptivemotorcontrollab"
+        echo "   (DeepLabCut), cung ma C++ Kraehenbuehl & Koltun, cung module pydensecrf, build ghim Cython 0.29.36;"
+        echo "   R0-g2/g3/g5 van kiem hanh vi)"
+        try_install 3 "pydensecrf2==1.1 (PyPI, fork adaptivemotorcontrollab)" "$ILOG/attempt3_pydensecrf2.log" \
+            pip install pydensecrf2==1.1 || true
+      fi
     fi
   fi
+  pip freeze 2>/dev/null | grep -i densecrf > "$ILOG/pip_freeze_densecrf.txt" || true
+  python - "$ILOG" "${ATTEMPTS[@]}" <<'PYEOF'
+import json, os, sys
+d, items = sys.argv[1], sys.argv[2:]
+att = [dict(zip(('n', 'method', 'ok', 'log'), x.split('|'))) for x in items]
+for a in att:
+    a['n'], a['ok'] = int(a['n']), a['ok'] == '1'
+fz = open(os.path.join(d, 'pip_freeze_densecrf.txt')).read().strip() if os.path.exists(os.path.join(d, 'pip_freeze_densecrf.txt')) else ''
+used = next((a['method'] for a in att if a['ok']), 'da co san' if not att else None)
+json.dump({'attempts': att, 'used': used, 'pip_freeze': fz}, open(os.path.join(d, 'install_summary.json'), 'w'),
+          indent=2, ensure_ascii=False)
+PYEOF
   if python Tools/r0_pcrf.py crf-info; then
-    CRF_OK=1; ok "pydensecrf: $(pip freeze 2>/dev/null | grep -i pydensecrf)"
+    CRF_OK=1; ok "pydensecrf: $(cat "$ILOG/pip_freeze_densecrf.txt" 2>/dev/null) — log cai dat: $ILOG"
   else
-    die "cai pydensecrf KHONG duoc — theo §3.3 dung, KHONG tu viet CRF thay the. (Chi chay P0: --stages p0)"
+    die "cai pydensecrf KHONG duoc (3 lan, log: $ILOG) — theo §3.3 dung, KHONG tu viet CRF thay the. (Chi chay P0: --stages p0)"
   fi
 fi
 
@@ -141,7 +175,8 @@ run_p0() { local d="$1"; shift
 }
 run_r0() { local d="$1"; shift
   python Tools/r0_pcrf.py run --ckpt-dir "$CK" --snapshot-dir "$SNAP" --data-root "$DATA" --probe-ids "$PROBE" \
-      --figure-images "$FIG" --output-dir "$d/r0_crf" --workers "$WORKERS" --input-mode "$MODE" "$@" 2>&1 | tee -a "$d/r0.log"
+      --figure-images "$FIG" --output-dir "$d/r0_crf" --workers "$WORKERS" --input-mode "$MODE" \
+      --install-log-dir "$ILOG" "$@" 2>&1 | tee -a "$d/r0.log"
 }
 
 # ── DRY-RUN: cong chan ─────────────────────────────────────────────────────────
@@ -171,7 +206,8 @@ if has p0; then
 fi
 if has r0; then
   step "R0 — P-CRF (5 checkpoint; $WORKERS tien trinh CRF; che do $MODE)"
-  run_r0 "$RF" || RC_R0=$?
+  R0X=(); [[ -f "$DRY/r0_crf/crf_fingerprint.json" ]] && R0X=(--crf-ref "$DRY/r0_crf/crf_fingerprint.json")
+  run_r0 "$RF" "${R0X[@]}" || RC_R0=$?
   [[ $RC_R0 -eq 0 ]] && ok "R0 xong, cong PASS" || echo "  [!]     R0: CONG FAIL / loi (rc=$RC_R0) — xem $RF/r0.log, $RF/r0_crf/gates/"
 fi
 
